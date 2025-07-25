@@ -9,6 +9,9 @@ import { Avatar, AvatarFallback } from "@/src/components/ui/avatar";
 import { UserIcon, SparkleIcon } from "lucide-react";
 import { MarkdownJsonView } from "@/src/components/ui/MarkdownJsonView";
 import { deepParseJson } from "@langfuse/shared";
+import { BotIcon } from "lucide-react";
+import { generateScoreName, OMAI_SCORE_CONFIGS } from "./score-config";
+import { MultiSelect } from "@/src/features/filters/components/multi-select";
 
 interface ConversationViewProps {
   sessionId: string;
@@ -26,7 +29,13 @@ interface ConversationMessage {
   environment: string | null;
 }
 
-const ConversationMessage = ({ message }: { message: ConversationMessage }) => {
+const ConversationMessage = ({
+  message,
+  projectId,
+}: {
+  message: ConversationMessage;
+  projectId: string;
+}) => {
   const input = deepParseJson(message.input);
   const output = deepParseJson(message.output);
 
@@ -59,26 +68,34 @@ const ConversationMessage = ({ message }: { message: ConversationMessage }) => {
         </div>
       )}
       {output && (
-        <div className="grid max-w-screen-md gap-2">
-          <div className="flex flex-row items-center gap-2">
-            <Avatar>
-              <AvatarFallback className="bg-pink-600 text-white">
-                <SparkleIcon className="h-4 w-4" />
-              </AvatarFallback>
-            </Avatar>
-            <div className="font-mono text-sm font-bold">DJB</div>
-          </div>
-          <div className="relative overflow-hidden break-all rounded-lg bg-secondary p-4 pb-6 text-sm">
-            <MarkdownJsonView
-              title="Output"
-              className="ph-no-capture"
-              content={output}
-              customCodeHeaderClassName=""
-              media={[]}
-            />
-            <div className="absolute bottom-2 right-2">
-              <div className="text-xs text-muted-foreground">
-                {message.timestamp.toLocaleString()}
+        <div className="">
+          <div className="grid max-w-screen-md gap-2">
+            <div className="flex flex-row items-center gap-2">
+              <Avatar>
+                <AvatarFallback className="bg-pink-600 text-white">
+                  <SparkleIcon className="h-4 w-4" />
+                </AvatarFallback>
+              </Avatar>
+              <div className="font-mono text-sm font-bold">DJB</div>
+            </div>
+            <div className="relative overflow-hidden break-all rounded-lg bg-secondary p-4 pb-6 text-sm">
+              <MarkdownJsonView
+                title="Output"
+                className="ph-no-capture"
+                content={output}
+                customCodeHeaderClassName=""
+                media={[]}
+              />
+              <div className="absolute bottom-2 right-2">
+                <div className="text-xs text-muted-foreground">
+                  {message.timestamp.toLocaleString()}
+                </div>
+              </div>
+              <div id="scores-container" className="flex-1 py-4">
+                <div>Scores</div>
+                <div id="inner-container" className="pt-2">
+                  <MessageScores id={message.id} projectId={projectId} />
+                </div>
               </div>
             </div>
           </div>
@@ -90,6 +107,102 @@ const ConversationMessage = ({ message }: { message: ConversationMessage }) => {
         </div>
       )}
     </>
+  );
+};
+
+export const ConversationView = ({
+  sessionId,
+  projectId,
+}: ConversationViewProps) => {
+  const sessionTraces = api.conversation.getSessionTraces.useQuery(
+    {
+      projectId,
+      sessionId,
+    },
+    {
+      retry(failureCount, error) {
+        if (
+          error.data?.code === "UNAUTHORIZED" ||
+          error.data?.code === "NOT_FOUND"
+        )
+          return false;
+        return failureCount < 3;
+      },
+    },
+  );
+
+  const messages = sessionTraces.data?.traces;
+
+  if (sessionTraces.error?.data?.code === "UNAUTHORIZED") {
+    return <ErrorPage message="You do not have access to this session." />;
+  }
+
+  if (sessionTraces.error?.data?.code === "NOT_FOUND") {
+    return (
+      <ErrorPage
+        title="Session not found"
+        message="The session is either still being processed or has been deleted."
+        additionalButton={{
+          label: "Retry",
+          onClick: () => void window.location.reload(),
+        }}
+      />
+    );
+  }
+
+  if (sessionTraces.isLoading) {
+    return (
+      <div className="space-y-4">
+        {[...Array(3)].map((_, i) => (
+          <Card key={i} className="p-4">
+            <JsonSkeleton className="h-32 w-full" numRows={5} />
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  if (!messages || !messages.length) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <div className="text-center">
+          <div className="text-lg font-medium">
+            No conversation messages found
+          </div>
+          <div className="text-sm text-muted-foreground">
+            This session doesn&apos;t contain any traces with input/output
+            messages.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">
+            Turn{messages.length === 1 ? "" : "s"}: {messages.length}
+          </Badge>
+          <Badge variant="outline">
+            Duration: {calculateDuration(messages)}
+          </Badge>
+          {/* <Badge variant="outline">Session: {sessionId}</Badge> */}
+        </div>
+      </div>
+      {/* Conversation Messages */}
+      <div className="grid gap-4 md:px-8">
+        {messages &&
+          messages.map((message) => (
+            <ConversationMessage
+              key={message.id}
+              message={message}
+              projectId={projectId}
+            />
+          ))}
+      </div>
+    </div>
   );
 };
 
@@ -131,99 +244,76 @@ const calculateDuration = (messages: ConversationMessage[]): string => {
   return `${seconds}s`;
 };
 
-export const ConversationView = ({
-  sessionId,
-  projectId,
-}: ConversationViewProps) => {
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+function MessageScores({ id, projectId }: { id: string; projectId: string }) {
+  const utils = api.useUtils();
 
-  const sessionTraces = api.conversation.getSessionTraces.useQuery(
-    {
-      projectId,
-      sessionId,
+  const scoresQuery = api.conversation.getScoresForTraces.useQuery({
+    projectId,
+    traceIds: [id],
+  });
+
+  const mutateScores = api.conversation.upsertScore.useMutation({
+    onSuccess: () => {
+      console.log("Invalidating scores query");
+      utils.conversation.getScoresForTraces.invalidate({
+        projectId,
+        traceIds: [id],
+      });
     },
-    {
-      retry(failureCount, error) {
-        if (
-          error.data?.code === "UNAUTHORIZED" ||
-          error.data?.code === "NOT_FOUND"
-        )
-          return false;
-        return failureCount < 3;
-      },
-    },
-  );
-
-  useEffect(() => {
-    if (sessionTraces.data?.traces) {
-      setMessages(sessionTraces.data.traces);
-    }
-  }, [sessionTraces.data]);
-
-  if (sessionTraces.error?.data?.code === "UNAUTHORIZED") {
-    return <ErrorPage message="You do not have access to this session." />;
-  }
-
-  if (sessionTraces.error?.data?.code === "NOT_FOUND") {
-    return (
-      <ErrorPage
-        title="Session not found"
-        message="The session is either still being processed or has been deleted."
-        additionalButton={{
-          label: "Retry",
-          onClick: () => void window.location.reload(),
-        }}
-      />
-    );
-  }
-
-  if (sessionTraces.isLoading) {
-    return (
-      <div className="space-y-4">
-        {[...Array(3)].map((_, i) => (
-          <Card key={i} className="p-4">
-            <JsonSkeleton className="h-32 w-full" numRows={5} />
-          </Card>
-        ))}
-      </div>
-    );
-  }
-
-  if (!messages.length) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="text-center">
-          <div className="text-lg font-medium">
-            No conversation messages found
-          </div>
-          <div className="text-sm text-muted-foreground">
-            This session doesn&apos;t contain any traces with input/output
-            messages.
-          </div>
-        </div>
-      </div>
-    );
-  }
+  });
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline">
-            Turn{messages.length === 1 ? "" : "s"}: {messages.length}
-          </Badge>
-          <Badge variant="outline">
-            Duration: {calculateDuration(messages)}
-          </Badge>
-          {/* <Badge variant="outline">Session: {sessionId}</Badge> */}
-        </div>
-      </div>
-      {/* Conversation Messages */}
-      <div className="grid gap-4 md:px-8">
-        {messages.map((message) => (
-          <ConversationMessage key={message.id} message={message} />
-        ))}
-      </div>
+    <div className="grid min-h-56 gap-4">
+      {OMAI_SCORE_CONFIGS.map((config) => {
+        return (
+          <div className="border border-dashed p-2">
+            <div className="font-mono">{config.reviewer}</div>
+            <div className="grid gap-2 pt-4">
+              {config.options.map((option) => {
+                // find score for this reviewer
+                const targetScoreName = generateScoreName(config, option.id);
+
+                const existingScore = scoresQuery.data?.scores.find(
+                  (score) =>
+                    score.name === targetScoreName &&
+                    score.traceId === id &&
+                    score.source === "ANNOTATION",
+                );
+
+                const scoreValue =
+                  existingScore?.stringValue?.split(",").filter(Boolean) ?? [];
+
+                return (
+                  <div className="flex flex-wrap items-center gap-4 rounded bg-secondary p-2">
+                    <div className="text-sm">{option.label}:</div>
+                    <MultiSelect
+                      values={scoreValue}
+                      onValueChange={(newValue) => {
+                        const preparedValue = newValue.join(",");
+                        mutateScores.mutate({
+                          projectId,
+                          scoreId: existingScore?.id ?? undefined,
+                          traceId: id,
+                          name: targetScoreName,
+                          dataType: "CATEGORICAL",
+                          stringValue: preparedValue,
+                        });
+                      }}
+                      options={option.options.map((option) => ({
+                        value: option,
+                        displayValue: option,
+                      }))}
+                      label="Select options"
+                      className="min-w-[200px]"
+                      disabled={mutateScores.isLoading || scoresQuery.isLoading}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
-};
+}
