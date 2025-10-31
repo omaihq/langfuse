@@ -1,14 +1,13 @@
 import { randomUUID } from "crypto";
 import { z } from "zod/v4";
 
-import { type Model } from "../../db";
 import { env } from "../../env";
 import {
   InvalidRequestError,
   LangfuseNotFoundError,
   UnauthorizedError,
 } from "../../errors";
-import { AuthHeaderValidVerificationResult } from "../auth/types";
+import { AuthHeaderValidVerificationResultIngestion } from "../auth/types";
 import { getClickhouseEntityType } from "../clickhouse/schemaUtils";
 import {
   getCurrentSpan,
@@ -49,12 +48,6 @@ const getS3StorageServiceClient = (bucketName: string): StorageService => {
   }
   return s3StorageServiceClient;
 };
-
-// eslint-disable-next-line no-unused-vars
-export type TokenCountDelegate = (p: {
-  model: Model;
-  text: unknown;
-}) => number | undefined;
 
 /**
  * Get the delay for the event based on the event type. Uses delay if set, 0 if current UTC timestamp is not between
@@ -99,12 +92,12 @@ type ProcessEventBatchOptions = {
 /**
  * Processes a batch of events.
  * @param input - Batch of IngestionEventType. Will validate the types first thing and return errors if they are invalid.
- * @param authCheck - AuthHeaderValidVerificationResult
+ * @param authCheck - AuthHeaderValidVerificationResultIngestion
  * @param options - (Optional) Options for the event batch processing.
  */
 export const processEventBatch = async (
   input: unknown[],
-  authCheck: AuthHeaderValidVerificationResult,
+  authCheck: AuthHeaderValidVerificationResultIngestion,
   options: ProcessEventBatchOptions = {},
 ): Promise<{
   successes: { id: string; status: number }[];
@@ -115,6 +108,9 @@ export const processEventBatch = async (
     error?: string;
   }[];
 }> => {
+  if (input.length === 0) {
+    return { successes: [], errors: [] };
+  }
   const { delay = null, source = "api", isLangfuseInternal = false } = options;
 
   // add context of api call to the span
@@ -129,8 +125,10 @@ export const processEventBatch = async (
     "langfuse.project.id",
     authCheck.scope.projectId ?? "",
   );
-  currentSpan?.setAttribute("langfuse.org.id", authCheck.scope.orgId);
-  currentSpan?.setAttribute("langfuse.org.plan", authCheck.scope.plan);
+  if (authCheck.scope.orgId)
+    currentSpan?.setAttribute("langfuse.org.id", authCheck.scope.orgId);
+  if (authCheck.scope.plan)
+    currentSpan?.setAttribute("langfuse.org.plan", authCheck.scope.plan);
 
   /**************
    * VALIDATION *
@@ -320,7 +318,7 @@ export const processEventBatch = async (
             },
             { delay: getDelay(delay, source) },
           )
-        : Promise.reject("Failed to instantiate queue");
+        : Promise.reject("Failed to instantiate ingestion queue");
     }),
   );
 
@@ -333,7 +331,7 @@ export const processEventBatch = async (
 
 const isAuthorized = (
   event: IngestionEventType,
-  authScope: AuthHeaderValidVerificationResult,
+  authScope: AuthHeaderValidVerificationResultIngestion,
 ): boolean => {
   if (event.type === eventTypes.SDK_LOG) {
     return true;

@@ -17,6 +17,14 @@ import {
 import { logger } from "@langfuse/shared/src/server";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "4.5mb",
+    },
+  },
+};
+
 export default withMiddlewares({
   POST: createAuthedProjectAPIRoute({
     name: "Create Dataset Item",
@@ -148,9 +156,7 @@ export default withMiddlewares({
           },
           take: limit,
           skip: (page - 1) * limit,
-          orderBy: {
-            createdAt: "desc",
-          },
+          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
           include: {
             dataset: {
               select: {

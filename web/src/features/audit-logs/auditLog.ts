@@ -7,6 +7,7 @@ import {
 export type AuditableResource =
   | "annotationQueue"
   | "annotationQueueItem"
+  | "annotationQueueAssignment"
   | "organization"
   | "orgMembership"
   | "projectMembership"
@@ -21,6 +22,7 @@ export type AuditableResource =
   | "score"
   | "scoreConfig"
   | "model"
+  | "notificationPreference"
   | "prompt"
   | "promptProtectedLabel"
   | "session"
@@ -29,6 +31,7 @@ export type AuditableResource =
   | "job"
   | "blobStorageIntegration"
   | "posthogIntegration"
+  | "mixpanelIntegration"
   | "llmApiKey"
   | "llmTool"
   | "llmSchema"
@@ -37,6 +40,8 @@ export type AuditableResource =
   | "batchAction"
   | "automation"
   | "action"
+  | "slackIntegration"
+  | "cloudSpendAlert"
   // legacy resources
   | "membership";
 

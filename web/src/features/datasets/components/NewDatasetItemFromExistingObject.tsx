@@ -43,6 +43,7 @@ export const NewDatasetItemFromExistingObject = (props: {
   output: string | null;
   metadata: Prisma.JsonValue;
   isCopyItem?: boolean;
+  buttonVariant?: "outline" | "secondary";
 }) => {
   const parsedInput =
     props.input && typeof props.input === "string"
@@ -74,6 +75,7 @@ export const NewDatasetItemFromExistingObject = (props: {
     scope: "datasets:CUD",
   });
   const capture = usePostHogClientCapture();
+  const buttonVariant = props.buttonVariant || "secondary";
 
   return (
     <>
@@ -137,7 +139,7 @@ export const NewDatasetItemFromExistingObject = (props: {
               object: props.observationId ? "observation" : "trace",
             });
           }}
-          variant="secondary"
+          variant={buttonVariant}
           disabled={!hasAccess}
         >
           {hasAccess ? (
@@ -155,7 +157,7 @@ export const NewDatasetItemFromExistingObject = (props: {
       <Dialog open={hasAccess && isFormOpen} onOpenChange={setIsFormOpen}>
         <DialogContent className="h-[calc(100vh-5rem)] max-h-none w-[calc(100vw-5rem)] max-w-none">
           <DialogHeader>
-            <DialogTitle>Add to datasets</DialogTitle>
+            <DialogTitle>Add item to datasets</DialogTitle>
           </DialogHeader>
           {isFormOpen && (
             <NewDatasetItemForm
@@ -167,9 +169,7 @@ export const NewDatasetItemFromExistingObject = (props: {
               metadata={props.metadata}
               onFormSuccess={() => setIsFormOpen(false)}
               className="h-full overflow-y-auto"
-              blockedDatasetIds={
-                props.fromDatasetId ? [props.fromDatasetId] : undefined
-              }
+              currentDatasetId={props.fromDatasetId}
             />
           )}
         </DialogContent>

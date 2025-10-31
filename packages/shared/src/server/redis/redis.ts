@@ -4,6 +4,7 @@ import { env } from "../../env";
 import { logger } from "../logger";
 
 const defaultRedisOptions: Partial<RedisOptions> = {
+  enableReadyCheck: true,
   maxRetriesPerRequest: null,
   enableAutoPipelining: env.REDIS_ENABLE_AUTO_PIPELINING === "true",
   keyPrefix: env.REDIS_KEY_PREFIX ?? undefined,
@@ -76,7 +77,9 @@ const createRedisClusterInstance = (
     dnsLookup: (address, callback) => {
       callback(null, address);
     },
+    slotsRefreshTimeout: 5000,
     redisOptions: {
+      username: env.REDIS_USERNAME || undefined,
       password: env.REDIS_AUTH || undefined,
       ...defaultRedisOptions,
       ...additionalOptions,
@@ -129,6 +132,7 @@ export const createNewRedisInstance = (
       ? new Redis({
           host: String(env.REDIS_HOST),
           port: Number(env.REDIS_PORT),
+          username: env.REDIS_USERNAME || undefined,
           password: String(env.REDIS_AUTH),
           ...defaultRedisOptions,
           ...additionalOptions,

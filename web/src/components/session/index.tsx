@@ -10,11 +10,12 @@ import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNa
 import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
 import { api } from "@/src/utils/api";
 import { usdFormatter } from "@/src/utils/numbers";
+import { getNumberFromMap } from "@/src/utils/map-utils";
 import Link from "next/link";
+import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
 import { AnnotateDrawer } from "@/src/features/scores/components/AnnotateDrawer";
 import { Button } from "@/src/components/ui/button";
-import useLocalStorage from "@/src/components/useLocalStorage";
 import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton";
 import { useSession } from "next-auth/react";
 import Page from "@/src/components/layouts/page";
@@ -27,6 +28,11 @@ import { ScrollArea } from "@/src/components/ui/scroll-area";
 import { Label } from "@/src/components/ui/label";
 import { AnnotationQueueObjectType, type APIScoreV2 } from "@langfuse/shared";
 import { CreateNewAnnotationQueueItem } from "@/src/features/annotation-queues/components/CreateNewAnnotationQueueItem";
+import { TablePeekView } from "@/src/components/table/peek";
+import { PeekViewTraceDetail } from "@/src/components/table/peek/peek-trace-detail";
+import { usePeekNavigation } from "@/src/components/table/peek/hooks/usePeekNavigation";
+import { NewDatasetItemFromExistingObject } from "@/src/features/datasets/components/NewDatasetItemFromExistingObject";
+import { ItemBadge } from "@/src/components/ItemBadge";
 
 // some projects have thousands of traces in a sessions, paginate to avoid rendering all at once
 const PAGE_SIZE = 50;
@@ -133,6 +139,7 @@ export const SessionPage: React.FC<{
   sessionId: string;
   projectId: string;
 }> = ({ sessionId, projectId }) => {
+  const router = useRouter();
   const { setDetailPageList } = useDetailPageLists();
   const userSession = useSession();
   const [visibleTraces, setVisibleTraces] = useState(PAGE_SIZE);
@@ -152,19 +159,31 @@ export const SessionPage: React.FC<{
       },
     },
   );
+
+  const { openPeek, closePeek, resolveDetailNavigationPath, expandPeek } =
+    usePeekNavigation({
+      expandConfig: {
+        // Expand peeked traces to the trace detail route; sessions list traces
+        basePath: `/project/${projectId}/traces`,
+      },
+      queryParams: ["observation", "display", "timestamp"],
+      extractParamsValuesFromRow: (row: any) => ({
+        timestamp: row.timestamp.toISOString(),
+      }),
+    });
+
   useEffect(() => {
     if (session.isSuccess) {
       setDetailPageList(
         "traces",
-        session.data.traces.map((t) => ({ id: t.id })),
+        session.data.traces.map((t) => ({
+          id: t.id,
+          params: { timestamp: t.timestamp.toISOString() },
+        })),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.isSuccess, session.data]);
-
-  const [emptySelectedConfigIds, setEmptySelectedConfigIds] = useLocalStorage<
-    string[]
-  >("emptySelectedConfigIds", []);
 
   const sessionCommentCounts = api.comments.getCountByObjectId.useQuery(
     {
@@ -201,8 +220,6 @@ export const SessionPage: React.FC<{
 
   return (
     <Page
-      withPadding
-      scrollable
       headerProps={{
         title: sessionId,
         itemType: "SESSION",
@@ -232,21 +249,23 @@ export const SessionPage: React.FC<{
         ),
         actionButtonsRight: (
           <>
-            <DetailPageNav
-              key="nav"
-              currentId={encodeURIComponent(sessionId)}
-              path={(entry) =>
-                `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
-              }
-              listKey="sessions"
-            />
+            {!router.query.peek && (
+              <DetailPageNav
+                key="nav"
+                currentId={encodeURIComponent(sessionId)}
+                path={(entry) =>
+                  `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
+                }
+                listKey="sessions"
+              />
+            )}
             <CommentDrawerButton
               key="comment"
               variant="outline"
               projectId={projectId}
               objectId={sessionId}
               objectType="SESSION"
-              count={sessionCommentCounts.data?.get(sessionId)}
+              count={getNumberFromMap(sessionCommentCounts.data, sessionId)}
             />
             <div className="flex items-start">
               <AnnotateDrawer
@@ -255,11 +274,19 @@ export const SessionPage: React.FC<{
                   type: "session",
                   sessionId,
                 }}
-                scores={session.data?.scores ?? []}
-                emptySelectedConfigIds={emptySelectedConfigIds}
-                setEmptySelectedConfigIds={setEmptySelectedConfigIds}
+                scores={
+                  session.data?.scores?.map((score) => ({
+                    ...score,
+                    timestamp: new Date(score.timestamp),
+                    createdAt: new Date(score.createdAt),
+                    updatedAt: new Date(score.updatedAt),
+                  })) ?? []
+                }
+                scoreMetadata={{
+                  projectId: projectId,
+                  environment: session.data?.environment,
+                }}
                 buttonVariant="outline"
-                hasGroupedButton={true}
               />
               <CreateNewAnnotationQueueItem
                 projectId={projectId}
@@ -272,82 +299,137 @@ export const SessionPage: React.FC<{
         ),
       }}
     >
-      <div className="flex flex-wrap items-end gap-2">
-        <SessionUsers projectId={projectId} users={session.data?.users} />
-        <Badge variant="outline">Traces: {session.data?.traces.length}</Badge>
-        {session.data && (
+      <div className="flex h-full flex-col overflow-auto">
+        <div className="sticky top-0 z-40 flex flex-wrap gap-2 border-b bg-background p-4">
+          {session.data?.users?.length ? (
+            <SessionUsers projectId={projectId} users={session.data.users} />
+          ) : null}
           <Badge variant="outline">
-            Total cost: {usdFormatter(session.data.totalCost, 2)}
+            Total traces: {session.data?.traces.length}
           </Badge>
-        )}
-        <SessionScores scores={session.data?.scores ?? []} />
-      </div>
-      <div className="mt-5 flex flex-col gap-2 border-t pt-5">
-        {session.data?.traces.slice(0, visibleTraces).map((trace, i) => (
-          <Card
-            className="group grid gap-3 border-border p-2 shadow-none hover:border-ring md:grid-cols-3"
-            key={trace.id}
-          >
-            <div className="col-span-2 overflow-hidden">
-              <SessionIO
-                traceId={trace.id}
-                projectId={projectId}
-                timestamp={trace.timestamp}
-              />
-            </div>
-            <div className="-mt-1 p-1 opacity-50 transition-opacity group-hover:opacity-100">
-              <div className="text-sm">Turn {i + 1}</div>
-              <Link
-                href={`/project/${projectId}/traces/${trace.id}`}
-                className="text-xs hover:underline"
+          {session.data && (
+            <Badge variant="outline">
+              Total cost: {usdFormatter(session.data.totalCost, 2)}
+            </Badge>
+          )}
+          <SessionScores
+            scores={
+              session.data?.scores?.map((score) => ({
+                ...score,
+                timestamp: new Date(score.timestamp),
+                createdAt: new Date(score.createdAt),
+                updatedAt: new Date(score.updatedAt),
+              })) ?? []
+            }
+          />
+        </div>
+        <div className="flex flex-col gap-4 p-4">
+          {session.data?.traces.slice(0, visibleTraces).map((trace, i) => (
+            <Card className="border-border shadow-none" key={trace.id}>
+              <div className="grid md:grid-cols-[1fr_1px_358px] lg:grid-cols-[1fr_1px_28rem]">
+                <div className="overflow-hidden py-4 pl-4 pr-4">
+                  <SessionIO
+                    traceId={trace.id}
+                    projectId={projectId}
+                    timestamp={new Date(trace.timestamp)}
+                  />
+                </div>
+                <div className="hidden bg-border md:block"></div>
+                <div className="flex flex-col border-t py-4 pl-4 pr-4 md:border-0">
+                  <div className="mb-4 flex flex-col gap-2">
+                    <div className="text-sm">Turn {i + 1}</div>
+                    <Link
+                      href={`/project/${projectId}/traces/${trace.id}`}
+                      className="flex items-start gap-2 rounded-lg border p-2 transition-colors hover:bg-accent"
+                      onClick={(e) => {
+                        // Only prevent default for normal clicks, allow modifier key clicks through
+                        if (!e.metaKey && !e.ctrlKey && !e.shiftKey) {
+                          e.preventDefault();
+                          openPeek(trace.id, trace);
+                        }
+                      }}
+                    >
+                      <ItemBadge type="TRACE" isSmall />
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium">
+                          {trace.name} ({trace.id})&nbsp;↗
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {trace.timestamp.toLocaleString()}
+                        </span>
+                      </div>
+                    </Link>
+                    <div className="flex flex-wrap gap-2">
+                      <NewDatasetItemFromTraceId
+                        projectId={projectId}
+                        traceId={trace.id}
+                        timestamp={new Date(trace.timestamp)}
+                        buttonVariant="outline"
+                      />
+                      <AnnotateDrawer
+                        key={"annotation-drawer" + trace.id}
+                        projectId={projectId}
+                        scoreTarget={{
+                          type: "trace",
+                          traceId: trace.id,
+                        }}
+                        scores={trace.scores}
+                        buttonVariant="outline"
+                        analyticsData={{
+                          type: "trace",
+                          source: "SessionDetail",
+                        }}
+                        scoreMetadata={{
+                          projectId: projectId,
+                          environment: trace.environment,
+                        }}
+                      />
+                      <CommentDrawerButton
+                        projectId={projectId}
+                        variant="outline"
+                        objectId={trace.id}
+                        objectType="TRACE"
+                        count={getNumberFromMap(
+                          traceCommentCounts.data,
+                          trace.id,
+                        )}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <p className="mb-1 font-medium">Scores</p>
+                    <div className="flex flex-wrap content-start items-start gap-1">
+                      <GroupedScoreBadges scores={trace.scores} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+          {session.data?.traces &&
+            session.data.traces.length > visibleTraces && (
+              <Button
+                onClick={() => setVisibleTraces((prev) => prev + PAGE_SIZE)}
+                variant="ghost"
+                className="self-center"
               >
-                Trace: {trace.name} ({trace.id})&nbsp;↗
-              </Link>
-              <div className="text-xs text-muted-foreground">
-                {trace.timestamp.toLocaleString()}
-              </div>
-              <div className="mb-1 mt-2 text-xs text-muted-foreground">
-                Scores
-              </div>
-              <div className="mb-1 flex flex-wrap content-start items-start gap-1">
-                <GroupedScoreBadges scores={trace.scores} />
-              </div>
-              <div className="flex items-center gap-1">
-                <AnnotateDrawer
-                  projectId={projectId}
-                  scoreTarget={{
-                    type: "trace",
-                    traceId: trace.id,
-                  }}
-                  scores={trace.scores}
-                  emptySelectedConfigIds={emptySelectedConfigIds}
-                  setEmptySelectedConfigIds={setEmptySelectedConfigIds}
-                  variant="badge"
-                  analyticsData={{ type: "trace", source: "SessionDetail" }}
-                  key={"annotation-drawer" + trace.id}
-                  environment={trace.environment}
-                />
-                <CommentDrawerButton
-                  projectId={projectId}
-                  objectId={trace.id}
-                  objectType="TRACE"
-                  count={traceCommentCounts.data?.get(trace.id)}
-                  className="h-6 rounded-full text-xs"
-                />
-              </div>
-            </div>
-          </Card>
-        ))}
-        {session.data?.traces && session.data.traces.length > visibleTraces && (
-          <Button
-            onClick={() => setVisibleTraces((prev) => prev + PAGE_SIZE)}
-            variant="ghost"
-            className="self-center"
-          >
-            {`Load ${Math.min(session.data.traces.length - visibleTraces, PAGE_SIZE)} More`}
-          </Button>
-        )}
+                {`Load ${Math.min(session.data.traces.length - visibleTraces, PAGE_SIZE)} More`}
+              </Button>
+            )}
+        </div>
       </div>
+      <TablePeekView
+        peekView={{
+          itemType: "TRACE",
+          detailNavigationKey: "traces",
+          openPeek,
+          closePeek,
+          expandPeek,
+          resolveDetailNavigationPath,
+          children: <PeekViewTraceDetail projectId={projectId} />,
+          tableDataUpdatedAt: session.dataUpdatedAt,
+        }}
+      />
     </Page>
   );
 };
@@ -393,5 +475,43 @@ export const SessionIO = ({
         </div>
       )}
     </div>
+  );
+};
+
+const NewDatasetItemFromTraceId = (props: {
+  projectId: string;
+  traceId: string;
+  timestamp: Date;
+  buttonVariant?: "outline" | "secondary";
+}) => {
+  // SessionIO already fetches the trace, so this doesn't add an extra request
+  const trace = api.traces.byId.useQuery(
+    {
+      traceId: props.traceId,
+      projectId: props.projectId,
+      timestamp: props.timestamp,
+    },
+    {
+      enabled: typeof props.traceId === "string",
+      trpc: {
+        context: {
+          skipBatch: true,
+        },
+      },
+      refetchOnMount: false,
+    },
+  );
+
+  if (!trace.data) return null;
+
+  return (
+    <NewDatasetItemFromExistingObject
+      projectId={props.projectId}
+      traceId={props.traceId}
+      input={trace.data.input ?? null}
+      output={trace.data.output ?? null}
+      metadata={trace.data.metadata ?? null}
+      buttonVariant={props.buttonVariant}
+    />
   );
 };

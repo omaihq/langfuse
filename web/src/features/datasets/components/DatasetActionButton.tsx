@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/src/components/ui/dialog";
-import { useState } from "react";
+import { useState, forwardRef } from "react";
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DatasetForm } from "@/src/features/datasets/components/DatasetForm";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
@@ -24,6 +24,7 @@ interface BaseDatasetButtonProps {
 
 interface CreateDatasetButtonProps extends BaseDatasetButtonProps {
   mode: "create";
+  folderPrefix?: string;
 }
 
 interface DeleteDatasetButtonProps extends BaseDatasetButtonProps {
@@ -46,7 +47,10 @@ type DatasetActionButtonProps =
   | UpdateDatasetButtonProps
   | DeleteDatasetButtonProps;
 
-export const DatasetActionButton = (props: DatasetActionButtonProps) => {
+export const DatasetActionButton = forwardRef<
+  HTMLButtonElement,
+  DatasetActionButtonProps
+>((props, ref) => {
   const capture = usePostHogClientCapture();
   const [open, setOpen] = useState(false);
   const hasAccess = useHasProjectAccess({
@@ -60,6 +64,7 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
         {props.mode === "update" ? (
           props.icon ? (
             <Button
+              ref={ref}
               variant={props.variant || "outline"}
               size={props.size || "icon"}
               className={props.className}
@@ -74,6 +79,7 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
             </Button>
           ) : (
             <Button
+              ref={ref}
               variant={props.variant || "ghost"}
               size={props.size || "icon"}
               className={props.className}
@@ -95,6 +101,7 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
           )
         ) : props.mode === "delete" ? (
           <Button
+            ref={ref}
             variant={props.variant || "ghost"}
             size={props.size}
             className={props.className}
@@ -115,6 +122,7 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
           </Button>
         ) : (
           <Button
+            ref={ref}
             size={props.size}
             className={props.className}
             disabled={!hasAccess}
@@ -152,6 +160,7 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
             mode="create"
             projectId={props.projectId}
             onFormSuccess={() => setOpen(false)}
+            folderPrefix={props.folderPrefix}
           />
         ) : props.mode === "delete" ? (
           <DatasetForm
@@ -175,4 +184,6 @@ export const DatasetActionButton = (props: DatasetActionButtonProps) => {
       </DialogContent>
     </Dialog>
   );
-};
+});
+
+DatasetActionButton.displayName = "DatasetActionButton";

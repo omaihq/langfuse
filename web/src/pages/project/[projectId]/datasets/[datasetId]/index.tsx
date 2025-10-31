@@ -85,7 +85,7 @@ export default function Dataset() {
     void utils.datasets.runsByDatasetId.invalidate();
     void utils.datasets.baseRunDataByDatasetId.invalidate();
     showSuccessToast({
-      title: "Experiment run triggered successfully",
+      title: "Experiment triggered successfully",
       description: "Waiting for experiment to complete...",
       link: {
         text: "View experiment",
@@ -119,7 +119,7 @@ export default function Dataset() {
 
   const {
     activeEvaluators,
-    inActiveEvaluators,
+    pausedEvaluators,
     selectedEvaluatorData,
     showEvaluatorForm,
     handleConfigureEvaluator,
@@ -178,10 +178,10 @@ export default function Dataset() {
                   onClick={() => capture("dataset_run:new_form_open")}
                 >
                   <FlaskConical className="h-4 w-4" />
-                  <span className="ml-2 hidden md:block">New experiment</span>
+                  <span className="ml-2 hidden md:block">Run experiment</span>
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-h-[90vh] overflow-y-auto">
+              <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
                 <CreateExperimentsForm
                   key={`create-experiment-form-${datasetId}`}
                   projectId={projectId as string}
@@ -204,7 +204,7 @@ export default function Dataset() {
                   onConfigureTemplate={handleConfigureEvaluator}
                   onSelectEvaluator={handleSelectEvaluator}
                   activeTemplateIds={activeEvaluators}
-                  inactiveTemplateIds={inActiveEvaluators}
+                  inactiveTemplateIds={pausedEvaluators}
                   disabled={!hasEvalWriteAccess}
                 />
               </div>

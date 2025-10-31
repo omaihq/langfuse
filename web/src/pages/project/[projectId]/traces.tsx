@@ -13,21 +13,40 @@ export default function Traces() {
   const router = useRouter();
   const projectId = router.query.projectId as string;
 
-  // Check if the user has any traces
-  const { data: hasAnyTrace, isLoading } = api.traces.hasAny.useQuery(
-    { projectId },
-    {
-      enabled: !!projectId,
-      trpc: {
-        context: {
-          skipBatch: true,
+  // Check if the user has tracing configured
+  const { data: hasTracingConfigured, isLoading } =
+    api.traces.hasTracingConfigured.useQuery(
+      { projectId },
+      {
+        enabled: !!projectId,
+        trpc: {
+          context: {
+            skipBatch: true,
+          },
         },
+        refetchInterval: 10_000,
       },
-      refetchInterval: 10_000,
-    },
-  );
+    );
 
-  const showOnboarding = !isLoading && !hasAnyTrace;
+  const showOnboarding = !isLoading && !hasTracingConfigured;
+
+  if (showOnboarding) {
+    return (
+      <Page
+        headerProps={{
+          title: "Tracing",
+          help: {
+            description:
+              "A trace represents a single function/api invocation. Traces contain observations. See docs to learn more.",
+            href: "https://langfuse.com/docs/observability/data-model",
+          },
+        }}
+        scrollable
+      >
+        <TracesOnboarding projectId={projectId} />
+      </Page>
+    );
+  }
 
   return (
     <Page
@@ -36,21 +55,15 @@ export default function Traces() {
         help: {
           description:
             "A trace represents a single function/api invocation. Traces contain observations. See docs to learn more.",
-          href: "https://langfuse.com/docs/tracing-data-model",
+          href: "https://langfuse.com/docs/observability/data-model",
         },
         tabsProps: {
           tabs: getTracingTabs(projectId),
           activeTab: TRACING_TABS.TRACES,
         },
       }}
-      scrollable={showOnboarding}
     >
-      {/* Show onboarding screen if user has no traces */}
-      {showOnboarding ? (
-        <TracesOnboarding projectId={projectId} />
-      ) : (
-        <TracesTable projectId={projectId} />
-      )}
+      <TracesTable projectId={projectId} />
     </Page>
   );
 }

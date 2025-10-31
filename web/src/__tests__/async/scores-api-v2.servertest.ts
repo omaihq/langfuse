@@ -475,10 +475,9 @@ describe("/api/public/v2/scores API Endpoint", () => {
           totalPages: 1,
         });
         for (const val of getAllScore.body.data) {
-          expect(val).toMatchObject({
-            traceId: traceId,
-            trace: { tags: ["prod", "test"], userId: "user-name" },
-          });
+          expect(val.traceId).toBe(traceId);
+          expect(val.trace?.tags?.sort()).toEqual(["prod", "test"].sort());
+          expect(val.trace?.userId).toBe("user-name");
         }
       });
 
@@ -862,6 +861,39 @@ describe("/api/public/v2/scores API Endpoint", () => {
               id: scoreId_1,
               name: scoreName,
               value: 10.5,
+            }),
+          ]),
+        );
+      });
+
+      it("should filter scores by session ID", async () => {
+        const getScore = await makeZodVerifiedAPICall(
+          GetScoresResponseV2,
+          "GET",
+          `/api/public/v2/scores?sessionId=${sessionId}`,
+          undefined,
+          authentication,
+        );
+        expect(getScore.status).toBe(200);
+        expect(getScore.body.meta).toMatchObject({
+          page: 1,
+          limit: 50,
+          totalItems: 2,
+          totalPages: 1,
+        });
+        expect(getScore.body.data).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: scoreId_6,
+              sessionId: sessionId,
+              name: scoreName,
+              value: 100.5,
+            }),
+            expect.objectContaining({
+              id: scoreId_7,
+              sessionId: sessionId,
+              name: "session-score-name",
+              value: 100.5,
             }),
           ]),
         );

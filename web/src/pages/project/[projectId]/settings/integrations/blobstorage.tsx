@@ -21,7 +21,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/src/components/ui/select";
-import { env } from "@/src/env.mjs";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import {
   blobStorageIntegrationFormSchema,
@@ -43,6 +42,7 @@ import {
   BlobStorageExportMode,
   type BlobStorageIntegration,
 } from "@langfuse/shared";
+import { useLangfuseCloudRegion } from "@/src/features/organizations/hooks";
 
 export default function BlobStorageIntegrationSettings() {
   const router = useRouter();
@@ -162,11 +162,12 @@ const BlobStorageIntegrationSettingsForm = ({
   isLoading: boolean;
 }) => {
   const capture = usePostHogClientCapture();
+  const { isLangfuseCloud } = useLangfuseCloudRegion();
   const [integrationType, setIntegrationType] =
     useState<BlobStorageIntegrationType>(BlobStorageIntegrationType.S3);
 
   // Check if this is a self-hosted instance (no cloud region set)
-  const isSelfHosted = !env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION;
+  const isSelfHosted = !isLangfuseCloud;
 
   const blobStorageForm = useForm({
     resolver: zodResolver(blobStorageIntegrationFormSchema),
@@ -618,7 +619,7 @@ const BlobStorageIntegrationSettingsForm = ({
       </form>
       <div className="mt-8 flex gap-2">
         <Button
-          loading={mut.isLoading}
+          loading={mut.isPending}
           onClick={blobStorageForm.handleSubmit(onSubmit)}
           disabled={isLoading}
         >
@@ -626,7 +627,7 @@ const BlobStorageIntegrationSettingsForm = ({
         </Button>
         <Button
           variant="secondary"
-          loading={mutValidate.isLoading}
+          loading={mutValidate.isPending}
           disabled={isLoading || !state}
           title="Test your saved configuration by uploading a small test file to your storage"
           onClick={() => {
@@ -637,7 +638,7 @@ const BlobStorageIntegrationSettingsForm = ({
         </Button>
         <Button
           variant="secondary"
-          loading={mutRunNow.isLoading}
+          loading={mutRunNow.isPending}
           disabled={isLoading || !state?.enabled}
           title="Trigger an immediate export of all data since the last sync"
           onClick={() => {
@@ -653,7 +654,7 @@ const BlobStorageIntegrationSettingsForm = ({
         </Button>
         <Button
           variant="ghost"
-          loading={mutDelete.isLoading}
+          loading={mutDelete.isPending}
           disabled={isLoading || !!!state}
           onClick={() => {
             if (

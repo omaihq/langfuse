@@ -2,9 +2,10 @@ import { DataTable } from "@/src/components/table/data-table";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { api } from "@/src/utils/api";
+import { safeExtract } from "@/src/utils/map-utils";
 import { type Prisma } from "@langfuse/shared/src/db";
 import { useQueryParams, withDefault, NumberParam } from "use-query-params";
-import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
+import { IOTableCell } from "../../ui/IOTableCell";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
@@ -298,7 +299,7 @@ export default function ModelTable({ projectId }: { projectId: string }) {
           tableName={"models"}
           columns={columns}
           data={
-            models.isLoading
+            models.isPending
               ? { isLoading: true, isError: false }
               : models.isError
                 ? {
@@ -309,7 +310,9 @@ export default function ModelTable({ projectId }: { projectId: string }) {
                 : {
                     isLoading: false,
                     isError: false,
-                    data: models.data.models.map((t) => convertToTableRow(t)),
+                    data: safeExtract(models.data, "models", []).map((t) =>
+                      convertToTableRow(t),
+                    ),
                   }
           }
           pagination={{

@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { sql } from "kysely";
 import { z } from "zod/v4";
 import { z as zodV3 } from "zod/v3";
-import { JobConfigState } from "@prisma/client";
+import { JobConfigState, JobExecutionStatus } from "@prisma/client";
 import {
   QueueJobs,
   QueueName,
@@ -10,13 +10,12 @@ import {
   tableColumnsToSqlFilterAndPrefix,
   traceException,
   eventTypes,
-  redis,
+  setNoJobConfigsCache,
   IngestionQueue,
   logger,
   EvalExecutionQueue,
-  checkTraceExists,
+  checkTraceExistsAndGetTimestamp,
   checkObservationExists,
-  DatasetRunItemUpsertEventType,
   TraceQueueEventType,
   StorageService,
   StorageServiceFactory,
@@ -27,6 +26,11 @@ import {
   getObservationForTraceIdByName,
   InMemoryFilterService,
   recordIncrement,
+  getCurrentSpan,
+  getDatasetItemIdsByTraceIdCh,
+  mapDatasetRunItemFilterColumn,
+  fetchLLMCompletion,
+  LangfuseInternalTraceEnvironment,
 } from "@langfuse/shared/src/server";
 import {
   mapTraceFilterColumn,
@@ -34,11 +38,8 @@ import {
 } from "./traceFilterUtils";
 import {
   ChatMessageRole,
-  ForbiddenError,
-  LangfuseNotFoundError,
   Prisma,
   singleFilter,
-  InvalidRequestError,
   variableMappingList,
   evalDatasetFormFilterCols,
   availableDatasetEvalVariables,
@@ -49,13 +50,12 @@ import {
   TraceDomain,
   Observation,
   DatasetItem,
-  QUEUE_ERROR_MESSAGES,
 } from "@langfuse/shared";
 import { kyselyPrisma, prisma } from "@langfuse/shared/src/db";
-import { backOff } from "exponential-backoff";
-import { callStructuredLLM, compileHandlebarString } from "../utils";
+import { compileHandlebarString, createW3CTraceId } from "../utils";
 import { env } from "../../env";
 import { JSONPath } from "jsonpath-plus";
+import { UnrecoverableError } from "../../errors/UnrecoverableError";
 
 let s3StorageServiceClient: StorageService;
 
@@ -90,16 +90,16 @@ const getS3StorageServiceClient = (bucketName: string): StorageService => {
  *
  * Data Flow Architecture for Evaluation Jobs
  *
- * ┌─────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
- * │                         │    │                         │    │                         │
- * │  TraceQueue             │    │  DatasetRunItemUpsert   │    │  CreateEvalQueue        │
- * │  - Live trace data      │    │  - Live dataset run item│    │  - Historical batch     │
- * │  - No timestamp in body │    │  - No timestamp in body │    │  - Has timestamp in body│
- * │  - enforcedTimeScope=NEW│    │  - enforcedTimeScope=NEW│    │  - No enforcedTimeScope │
- * │  - Always linked to     │    │  - Always linked to     │    │  - Always linked to     │
- * │    traces only          │    │    traces & sometimes   │    │    traces & sometimes   │
- * │                         │    │    to observations      │    │    to observations      │
- * └──────────────┬──────────┘    └──────────────┬──────────┘    └──────────────┬──────────┘
+ * ┌──────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
+ * │                          │    │                         │    │                         │
+ * │  TraceQueue              │    │  DatasetRunItemUpsert   │    │  CreateEvalQueue        │
+ * │  - Live trace data       │    │  - Live dataset run item│    │  - Historical batch     │
+ * │  - Has timestamp in body │    │  - No timestamp in body │    │  - Has timestamp in body│
+ * │  - enforcedTimeScope=NEW │    │  - enforcedTimeScope=NEW│    │  - No enforcedTimeScope │
+ * │  - Always linked to      │    │  - Always linked to     │    │  - Always linked to     │
+ * │    traces only           │    │    traces & sometimes   │    │    traces & sometimes   │
+ * │                          │    │    to observations      │    │    to observations      │
+ * └──────────────┬───────────┘    └──────────────┬──────────┘    └──────────────┬──────────┘
  *                │                              │                              │
  *                │                              │                              │
  *                └──────────────────┬───────────┴──────────────────────────────┘
@@ -148,18 +148,35 @@ const getS3StorageServiceClient = (bucketName: string): StorageService => {
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────── │
  */
-export const createEvalJobs = async ({
-  event,
-  jobTimestamp,
-  enforcedJobTimeScope,
-}: {
-  event:
-    | TraceQueueEventType
-    | DatasetRunItemUpsertEventType
-    | CreateEvalQueueEventType;
+type CreateEvalJobsParams = {
   jobTimestamp: Date;
   enforcedJobTimeScope?: JobTimeScope;
-}) => {
+} & (
+  | {
+      sourceEventType: "trace-upsert";
+      event: TraceQueueEventType;
+    }
+  | {
+      sourceEventType: "dataset-run-item-upsert";
+      event: TraceQueueEventType;
+    }
+  | {
+      sourceEventType: "ui-create-eval";
+      event: CreateEvalQueueEventType;
+    }
+);
+
+export const createEvalJobs = async ({
+  event,
+  sourceEventType,
+  jobTimestamp,
+  enforcedJobTimeScope,
+}: CreateEvalJobsParams) => {
+  const span = getCurrentSpan();
+  if (span) {
+    span.setAttribute("messaging.bullmq.job.input.projectId", event.projectId);
+  }
+
   // Fetch all configs for a given project. Those may be dataset or trace configs.
   let configsQuery = kyselyPrisma.$kysely
     .selectFrom("job_configurations")
@@ -190,12 +207,45 @@ export const createEvalJobs = async ({
       "No active evaluation jobs found for project",
       event.projectId,
     );
+
+    // Cache the fact that there are no job configurations for this project
+    // This helps avoid unnecessary database queries and queue processing
+    await setNoJobConfigsCache(event.projectId);
+
     return;
   }
 
   logger.debug(
     `Creating eval jobs for trace ${event.traceId} on project ${event.projectId}`,
   );
+
+  // Early exit: Skip eval job creation for internal Langfuse traces from trace-upsert queue
+  //
+  // CONTEXT: Prevent infinite eval loops
+  // Without this safeguard: user trace → eval → eval trace → another eval → infinite loop
+  //
+  // IMPLEMENTATION:
+  // - Block ALL traces with environment starting with "langfuse-" when coming from trace-upsert queue
+  // - This excludes traces from prompt experiments that come via dataset-run-item-upsert queue
+  // - Internal traces (e.g., eval executions) use LangfuseInternalTraceEnvironment enum values
+  //
+  // DUAL SAFEGUARD:
+  // - This check prevents eval job CREATION for internal traces
+  // - fetchLLMCompletion.ts enforces that internal traces MUST use "langfuse-" prefix
+  //
+  // See: packages/shared/src/server/llm/fetchLLMCompletion.ts (enforcement)
+  // See: packages/shared/src/server/llm/types.ts (LangfuseInternalTraceEnvironment enum)
+  if (
+    sourceEventType === "trace-upsert" &&
+    event.traceEnvironment?.startsWith("langfuse")
+  ) {
+    logger.debug("Skipping eval job creation for internal Langfuse trace", {
+      traceId: event.traceId,
+      environment: event.traceEnvironment,
+    });
+
+    return;
+  }
 
   // Optimization: Fetch trace data once if we have multiple configs
   let cachedTrace: TraceDomain | undefined | null = null;
@@ -211,6 +261,7 @@ export const createEvalJobs = async ({
           "timestamp" in event
             ? new Date(event.timestamp)
             : new Date(jobTimestamp),
+        clickhouseFeatureTag: "eval-create",
       });
 
       recordIncrement("langfuse.evaluation-execution.trace_cache_fetch", 1, {
@@ -232,6 +283,44 @@ export const createEvalJobs = async ({
     }
   }
 
+  // Note: We could parallelize this cache fetch with the getTraceById call above.
+  // This should increase throughput, but will also put more pressure on ClickHouse.
+  // Will keep it as-is for now, but that might be a useful change.
+  const datasetConfigs = configs.filter((c) => c.target_object === "dataset");
+  let cachedDatasetItemIds: { id: string; datasetId: string }[] | null = null;
+  if (datasetConfigs.length > 1) {
+    try {
+      cachedDatasetItemIds = await getDatasetItemIdsByTraceIdCh({
+        projectId: event.projectId,
+        traceId: event.traceId,
+        filter: [],
+      });
+      recordIncrement(
+        "langfuse.evaluation-execution.dataset_item_cache_fetch",
+        1,
+        {
+          found: Boolean(cachedDatasetItemIds.length > 0).toString(),
+        },
+      );
+      logger.debug("Fetched dataset item ids for evaluation optimization", {
+        traceId: event.traceId,
+        projectId: event.projectId,
+        found: Boolean(cachedDatasetItemIds.length > 0),
+        configCount: datasetConfigs.length,
+      });
+    } catch (error) {
+      logger.error(
+        "Failed to fetch datasetItemIds for evaluation optimization",
+        {
+          error,
+          traceId: event.traceId,
+          projectId: event.projectId,
+        },
+      );
+      // Continue without cached dataset item ids - will fall back to individual queries
+    }
+  }
+
   for (const config of configs) {
     if (config.status === JobConfigState.INACTIVE) {
       logger.debug(`Skipping inactive config ${config.id}`);
@@ -249,6 +338,9 @@ export const createEvalJobs = async ({
 
     // Check whether the trace already exists in the database.
     let traceExists = false;
+    let traceTimestamp: Date | undefined = cachedTrace?.timestamp;
+
+    let traceExistsDecisionSource: string;
 
     // Use cached trace for in-memory filtering when possible, i.e. all fields can
     // be checked in-memory.
@@ -261,6 +353,8 @@ export const createEvalJobs = async ({
         mapTraceFilterColumn,
       );
 
+      traceExistsDecisionSource = "cache";
+
       recordIncrement("langfuse.evaluation-execution.trace_cache_check", 1, {
         matches: traceExists ? "true" : "false",
       });
@@ -271,22 +365,39 @@ export const createEvalJobs = async ({
         filterCount: traceFilter.length,
       });
     } else {
-      // Fall back to database query for complex filters or when no cached trace
-      traceExists = await checkTraceExists({
-        projectId: event.projectId,
-        traceId: event.traceId,
-        // Fallback to jobTimestamp if no payload timestamp is set to allow for successful retry attempts.
-        timestamp:
-          "timestamp" in event
-            ? new Date(event.timestamp)
-            : new Date(jobTimestamp),
-        filter: traceFilter,
-        maxTimeStamp,
-        exactTimestamp:
+      // If the event is not a DatasetRunItemUpsertEventType and the trace has no special filters, we can already assume it's present
+      let exists: boolean = false;
+      let timestamp: Date | undefined = undefined;
+      if (!("datasetItemId" in event) && traceFilter.length === 0) {
+        exists = true;
+        timestamp =
           "exactTimestamp" in event && event.exactTimestamp
             ? new Date(event.exactTimestamp)
-            : undefined,
-      });
+            : undefined;
+
+        traceExistsDecisionSource = "identifier";
+      } else {
+        // Fall back to database query for complex filters or when no cached trace
+        ({ exists, timestamp } = await checkTraceExistsAndGetTimestamp({
+          projectId: event.projectId,
+          traceId: event.traceId,
+          // Fallback to jobTimestamp if no payload timestamp is set to allow for successful retry attempts.
+          timestamp:
+            "timestamp" in event
+              ? new Date(event.timestamp)
+              : new Date(jobTimestamp),
+          filter: traceFilter,
+          maxTimeStamp,
+          exactTimestamp:
+            "exactTimestamp" in event && event.exactTimestamp
+              ? new Date(event.exactTimestamp)
+              : undefined,
+        }));
+        traceExistsDecisionSource = "lookup";
+      }
+
+      traceExists = exists;
+      traceTimestamp = timestamp;
       recordIncrement("langfuse.evaluation-execution.trace_db_lookup", 1, {
         hasCached: Boolean(cachedTrace).toString(),
         requiredDatabaseLookup: requiresDatabaseLookup(traceFilter)
@@ -294,6 +405,11 @@ export const createEvalJobs = async ({
           : "false",
       });
     }
+
+    recordIncrement("langfuse.evaluation-execution.trace_exists_check", 1, {
+      decisionSource: traceExistsDecisionSource,
+      exists: String(traceExists),
+    });
 
     const isDatasetConfig = config.target_object === "dataset";
     let datasetItem: { id: string } | undefined;
@@ -317,19 +433,27 @@ export const createEvalJobs = async ({
         `);
         datasetItem = datasetItems.shift();
       } else {
-        // Otherwise, try to find the dataset item id from datasetRunItems.
-        // Here, we can search for the traceId and projectId and should only get one result.
-        const datasetItems = await prisma.$queryRaw<
-          Array<{ id: string }>
-        >(Prisma.sql`
-          SELECT dataset_item_id as id
-          FROM dataset_run_items as dri
-          JOIN dataset_items as di ON di.id = dri.dataset_item_id AND di.project_id = ${event.projectId}
-          WHERE dri.project_id = ${event.projectId}
-            AND dri.trace_id = ${event.traceId}
-            ${condition}
-        `);
-        datasetItem = datasetItems.shift();
+        // If the cached items are not null, we fetched all available datasetItemIds from the DB.
+        // The dataset is the only allowed filter today, so it should be easy to check using our existing in memory filter.
+        if (cachedDatasetItemIds !== null) {
+          // Try to find from cache
+          // Note that the entity is _NOT_ a true datasetRunItem here. The mapping logic works, but we need to keep in mind
+          // that the `id` column is the `datasetItemId` _not_ the `datasetRunItemId`!
+          datasetItem = cachedDatasetItemIds.find((di) =>
+            InMemoryFilterService.evaluateFilter(
+              di,
+              config.target_object === "dataset" ? validatedFilter : [],
+              mapDatasetRunItemFilterColumn,
+            ),
+          );
+        } else {
+          const datasetItemIds = await getDatasetItemIdsByTraceIdCh({
+            projectId: event.projectId,
+            traceId: event.traceId,
+            filter: config.target_object === "dataset" ? validatedFilter : [],
+          });
+          datasetItem = datasetItemIds.shift();
+        }
       }
     }
 
@@ -414,6 +538,7 @@ export const createEvalJobs = async ({
           projectId: event.projectId,
           jobConfigurationId: config.id,
           jobInputTraceId: event.traceId,
+          jobInputTraceTimestamp: traceTimestamp,
           jobTemplateId: config.eval_template_id,
           status: "PENDING",
           startTime: new Date(),
@@ -455,12 +580,21 @@ export const createEvalJobs = async ({
         logger.debug(
           `Cancelling eval job for config ${config.id} and trace ${event.traceId}`,
         );
-        await kyselyPrisma.$kysely
-          .updateTable("job_executions")
-          .set("status", sql`'CANCELLED'::"JobExecutionStatus"`)
-          .set("end_time", new Date())
-          .where("id", "=", existingJob[0].id)
-          .execute();
+
+        // Note: we use updateMany to gracefully handle case where execution is already completed; we silently skip the update.
+        await prisma.jobExecution.updateMany({
+          where: {
+            id: existingJob[0].id,
+            projectId: event.projectId,
+            status: {
+              not: JobExecutionStatus.COMPLETED,
+            },
+          },
+          data: {
+            status: JobExecutionStatus.CANCELLED,
+            endTime: new Date(),
+          },
+        });
       }
     }
   }
@@ -476,12 +610,12 @@ export const evaluate = async ({
     `Evaluating job ${event.jobExecutionId} for project ${event.projectId}`,
   );
   // first, fetch all the context required for the evaluation
-  const job = await kyselyPrisma.$kysely
-    .selectFrom("job_executions")
-    .selectAll()
-    .where("id", "=", event.jobExecutionId)
-    .where("project_id", "=", event.projectId)
-    .executeTakeFirst();
+  const job = await prisma.jobExecution.findFirst({
+    where: {
+      id: event.jobExecutionId,
+      projectId: event.projectId,
+    },
+  });
 
   if (!job) {
     logger.info(
@@ -490,43 +624,38 @@ export const evaluate = async ({
     return;
   }
 
-  if (!job?.job_input_trace_id) {
-    throw new ForbiddenError(
-      "Jobs can only be executed on traces and dataset runs for now.",
-    );
-  }
-
-  if (job.status === "CANCELLED") {
+  if (job.status === "CANCELLED" || !job?.jobInputTraceId) {
     logger.debug(`Job ${job.id} for project ${event.projectId} was cancelled.`);
 
-    await kyselyPrisma.$kysely
-      .deleteFrom("job_executions")
-      .where("id", "=", job.id)
-      .where("project_id", "=", event.projectId)
-      .execute();
+    await prisma.jobExecution.delete({
+      where: {
+        id: job.id,
+        projectId: event.projectId,
+      },
+    });
 
     return;
   }
 
-  const config = await kyselyPrisma.$kysely
-    .selectFrom("job_configurations")
-    .selectAll()
-    .where("id", "=", job.job_configuration_id)
-    .where("project_id", "=", event.projectId)
-    .executeTakeFirstOrThrow();
+  const config = await prisma.jobConfiguration.findFirst({
+    where: {
+      id: job.jobConfigurationId,
+      projectId: event.projectId,
+    },
+  });
 
-  if (!config || !config.eval_template_id) {
+  if (!config || !config.evalTemplateId) {
     logger.error(
-      `Eval template not found for config ${config.eval_template_id}`,
+      `Evaluation template not found for config: ${config?.evalTemplateId}`,
     );
-    throw new InvalidRequestError(
-      `Eval template not found for config ${config.eval_template_id}`,
+    throw new UnrecoverableError(
+      `Evaluation template not found for config: ${config?.evalTemplateId}`,
     );
   }
 
   const template = await prisma.evalTemplate.findFirstOrThrow({
     where: {
-      id: config.eval_template_id,
+      id: config.evalTemplateId,
       OR: [{ projectId: event.projectId }, { projectId: null }],
     },
   });
@@ -537,15 +666,16 @@ export const evaluate = async ({
 
   // selectedcolumnid is not safe to use, needs validation in extractVariablesFromTrace()
   const parsedVariableMapping = variableMappingList.parse(
-    config.variable_mapping,
+    config.variableMapping,
   );
 
   // extract the variables which need to be inserted into the prompt
   const mappingResult = await extractVariablesFromTracingData({
     projectId: event.projectId,
     variables: template.vars,
-    traceId: job.job_input_trace_id,
-    datasetItemId: job.job_input_dataset_item_id ?? undefined,
+    traceId: job.jobInputTraceId,
+    traceTimestamp: job.jobInputTraceTimestamp ?? undefined,
+    datasetItemId: job.jobInputDatasetItemId ?? undefined,
     variableMapping: parsedVariableMapping,
   });
 
@@ -584,7 +714,9 @@ export const evaluate = async ({
     .parse(template.outputSchema);
 
   if (!parsedOutputSchema) {
-    throw new InvalidRequestError("Output schema not found");
+    throw new UnrecoverableError(
+      "Output schema not found in evaluation template",
+    );
   }
 
   const evalScoreSchema = zodV3.object({
@@ -603,7 +735,9 @@ export const evaluate = async ({
     logger.warn(
       `Evaluating job ${event.jobExecutionId} will fail. ${modelConfig.error}`,
     );
-    throw new LangfuseNotFoundError(modelConfig.error);
+    throw new UnrecoverableError(
+      `Invalid model configuration for job ${event.jobExecutionId}: ${modelConfig.error}`,
+    );
   }
 
   const messages = [
@@ -614,38 +748,68 @@ export const evaluate = async ({
     } as const,
   ];
 
-  const parsedLLMOutput = await backOff(
-    async () =>
-      await callStructuredLLM(
-        event.jobExecutionId,
-        modelConfig.config.apiKey,
-        messages,
-        modelConfig.config.modelParams ?? {},
-        modelConfig.config.provider,
-        modelConfig.config.model,
-        evalScoreSchema,
-      ),
-    {
-      numOfAttempts: 1, // turn off retries as Langchain is doing that for us already.
-    },
+  // persist the score and update the job status
+  const scoreId = randomUUID();
+
+  // Use deterministic trace ID from job execution ID. Retries will be in same trace.
+  const executionTraceId = createW3CTraceId(event.jobExecutionId);
+
+  const executionMetadata = Object.fromEntries(
+    Object.entries({
+      job_execution_id: event.jobExecutionId,
+      job_configuration_id: job.jobConfigurationId,
+      target_trace_id: job.jobInputTraceId,
+      target_observation_id: job.jobInputObservationId,
+      target_dataset_item_id: job.jobInputDatasetItemId,
+    }).filter(([, v]) => v != null),
   );
+
+  const llmOutput = await fetchLLMCompletion({
+    streaming: false,
+    llmConnection: modelConfig.config.apiKey,
+    messages,
+    modelParams: {
+      provider: modelConfig.config.provider,
+      model: modelConfig.config.model,
+      adapter: modelConfig.config.apiKey.adapter,
+      ...modelConfig.config.modelParams,
+    },
+    structuredOutputSchema: evalScoreSchema,
+    maxRetries: 1,
+    traceSinkParams: {
+      targetProjectId: event.projectId,
+      traceId: executionTraceId,
+      traceName: `Execute evaluator: ${template.name}`,
+      environment: LangfuseInternalTraceEnvironment.LLMJudge,
+      metadata: {
+        ...executionMetadata,
+        score_id: scoreId,
+      },
+    },
+  });
+
+  const parsedLLMOutput = evalScoreSchema.safeParse(llmOutput);
+  if (!parsedLLMOutput.success) {
+    throw new UnrecoverableError(
+      `Invalid LLM response format from model ${modelConfig.config.model}. Response: ${llmOutput}`,
+    );
+  }
 
   logger.debug(
     `Evaluating job ${event.jobExecutionId} Parsed LLM output ${JSON.stringify(parsedLLMOutput)}`,
   );
 
-  // persist the score and update the job status
-  const scoreId = randomUUID();
-
   const baseScore = {
     id: scoreId,
-    traceId: job.job_input_trace_id,
-    observationId: job.job_input_observation_id,
-    name: config.score_name,
-    value: parsedLLMOutput.score,
-    comment: parsedLLMOutput.reasoning,
+    traceId: job.jobInputTraceId,
+    observationId: job.jobInputObservationId,
+    name: config.scoreName,
+    value: parsedLLMOutput.data.score,
+    comment: parsedLLMOutput.data.reasoning,
     source: ScoreSource.EVAL,
     environment: environment ?? "default",
+    executionTraceId: executionTraceId,
+    metadata: executionMetadata,
   };
 
   // Write score to S3 and ingest into queue for Clickhouse processing
@@ -666,51 +830,55 @@ export const evaluate = async ({
       },
     ]);
 
-    if (redis) {
-      const shardingKey = `${event.projectId}-${scoreId}`;
-      const queue = IngestionQueue.getInstance({ shardingKey });
-      if (!queue) {
-        throw new Error("Ingestion queue not available");
-      }
-      await queue.add(QueueJobs.IngestionJob, {
-        id: randomUUID(),
-        timestamp: new Date(),
-        name: QueueJobs.IngestionJob as const,
-        payload: {
-          data: {
-            type: eventTypes.SCORE_CREATE,
-            eventBodyId: scoreId,
-            fileKey: eventId,
-          },
-          authCheck: {
-            validKey: true,
-            scope: {
-              projectId: event.projectId,
-            },
+    const shardingKey = `${event.projectId}-${scoreId}`;
+    const queue = IngestionQueue.getInstance({ shardingKey });
+    if (!queue) {
+      throw new Error("Ingestion queue not available");
+    }
+    await queue.add(QueueJobs.IngestionJob, {
+      id: randomUUID(),
+      timestamp: new Date(),
+      name: QueueJobs.IngestionJob as const,
+      payload: {
+        data: {
+          type: eventTypes.SCORE_CREATE,
+          eventBodyId: scoreId,
+          fileKey: eventId,
+        },
+        authCheck: {
+          validKey: true,
+          scope: {
+            projectId: event.projectId,
           },
         },
-      });
-    }
+      },
+    });
   } catch (e) {
     logger.error(`Failed to add score into IngestionQueue: ${e}`, e);
     traceException(e);
+
     throw new Error(`Failed to write score ${scoreId} into IngestionQueue`);
   }
 
   logger.debug(
-    `Evaluating job ${event.jobExecutionId} persisted score ${scoreId} for trace ${job.job_input_trace_id}`,
+    `Evaluating job ${event.jobExecutionId} persisted score ${scoreId} for trace ${job.jobInputTraceId}`,
   );
 
-  await kyselyPrisma.$kysely
-    .updateTable("job_executions")
-    .set("status", sql`'COMPLETED'::"JobExecutionStatus"`)
-    .set("end_time", new Date())
-    .set("job_output_score_id", scoreId)
-    .where("id", "=", event.jobExecutionId)
-    .execute();
+  await prisma.jobExecution.update({
+    where: {
+      id: event.jobExecutionId,
+      projectId: event.projectId,
+    },
+    data: {
+      status: JobExecutionStatus.COMPLETED,
+      endTime: new Date(),
+      jobOutputScoreId: scoreId,
+      executionTraceId,
+    },
+  });
 
   logger.debug(
-    `Eval job ${job.id} for project ${event.projectId} completed with score ${parsedLLMOutput.score}`,
+    `Eval job ${job.id} for project ${event.projectId} completed with score ${parsedLLMOutput.data.score}`,
   );
 };
 
@@ -719,6 +887,7 @@ export async function extractVariablesFromTracingData({
   variables,
   traceId,
   variableMapping,
+  traceTimestamp,
   datasetItemId,
 }: {
   projectId: string;
@@ -726,6 +895,7 @@ export async function extractVariablesFromTracingData({
   traceId: string;
   // this here are variables which were inserted by users. Need to validate before DB query.
   variableMapping: z.infer<typeof variableMappingList>;
+  traceTimestamp?: Date;
   datasetItemId?: string;
 }): Promise<{ var: string; value: string; environment?: string }[]> {
   // Internal cache for this function call to avoid duplicate database lookups.
@@ -788,7 +958,7 @@ export async function extractVariablesFromTracingData({
           `Dataset item ${datasetItemId} for project ${projectId} not found. Please ensure the mapped data on the dataset item exists and consider extending the job delay.`,
         );
         // this should only happen for deleted data.
-        throw new LangfuseNotFoundError(
+        throw Error(
           `Dataset item ${datasetItemId} for project ${projectId} not found. Please ensure the mapped data on the dataset item exists and consider extending the job delay.`,
         );
       }
@@ -818,7 +988,12 @@ export async function extractVariablesFromTracingData({
       const traceCacheKey = `${projectId}:${traceId}`;
       let trace = traceCache.get(traceCacheKey);
       if (!traceCache.has(traceCacheKey)) {
-        trace = await getTraceById({ traceId, projectId });
+        trace = await getTraceById({
+          traceId,
+          projectId,
+          timestamp: traceTimestamp,
+          clickhouseFeatureTag: "eval-execution",
+        });
         traceCache.set(traceCacheKey, trace ?? null);
       }
 
@@ -828,7 +1003,7 @@ export async function extractVariablesFromTracingData({
           `Trace ${traceId} for project ${projectId} not found. Please ensure the mapped data on the trace exists and consider extending the job delay.`,
         );
         // this should only happen for deleted data or replication lags across clickhouse nodes.
-        throw new LangfuseNotFoundError(
+        throw Error(
           `Trace ${traceId} for project ${projectId} not found. Please ensure the mapped data on the trace exists and consider extending the job delay.`,
         );
       }
@@ -841,7 +1016,11 @@ export async function extractVariablesFromTracingData({
       continue;
     }
 
-    if (["generation", "span", "event"].includes(mapping.langfuseObject)) {
+    const observationTypes = availableTraceEvalVariables
+      .filter((obj) => obj.id !== "trace") // trace is handled separately above
+      .map((obj) => obj.id);
+
+    if (observationTypes.includes(mapping.langfuseObject)) {
       const safeInternalColumn = availableTraceEvalVariables
         .find((o) => o.id === mapping.langfuseObject)
         ?.availableColumns.find((col) => col.id === mapping.selectedColumnId);
@@ -865,13 +1044,13 @@ export async function extractVariablesFromTracingData({
       const observationCacheKey = `${projectId}:${traceId}:${mapping.objectName}`;
       let observation = observationCache.get(observationCacheKey);
       if (!observationCache.has(observationCacheKey)) {
-        const observations = await getObservationForTraceIdByName(
+        const observations = await getObservationForTraceIdByName({
           traceId,
           projectId,
-          mapping.objectName,
-          undefined,
-          true,
-        );
+          name: mapping.objectName,
+          timestamp: traceTimestamp,
+          fetchWithInputOutput: true,
+        });
         observation = observations.shift() || null; // We only take the first match and ignore duplicate generation-names in a trace.
         observationCache.set(observationCacheKey, observation);
       }
@@ -879,11 +1058,11 @@ export async function extractVariablesFromTracingData({
       // user facing errors
       if (!observation) {
         logger.warn(
-          `Observation ${mapping.objectName} for trace ${traceId} not found. ${QUEUE_ERROR_MESSAGES.MAPPED_DATA_ERROR}`,
+          `Observation ${mapping.objectName} for trace ${traceId} not found. Please ensure the mapped data exists and consider extending the job delay.`,
         );
         // this should only happen for deleted data or data replication lags across clickhouse nodes.
-        throw new LangfuseNotFoundError(
-          `Observation ${mapping.objectName} for trace ${traceId} not found. ${QUEUE_ERROR_MESSAGES.MAPPED_DATA_ERROR}`,
+        throw new UnrecoverableError(
+          `Observation ${mapping.objectName} for trace ${traceId} not found. Please ensure the mapped data exists and consider extending the job delay.`,
         );
       }
 

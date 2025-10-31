@@ -3,6 +3,7 @@ import {
   type APIScoreV2,
   type TraceDomain,
   AnnotationQueueObjectType,
+  isGenerationLike,
 } from "@langfuse/shared";
 import { AggUsageBadge } from "@/src/components/token-usage-badge";
 import { Badge } from "@/src/components/ui/badge";
@@ -17,7 +18,7 @@ import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton
 import { api } from "@/src/utils/api";
 import { NewDatasetItemFromExistingObject } from "@/src/features/datasets/components/NewDatasetItemFromExistingObject";
 import { CreateNewAnnotationQueueItem } from "@/src/features/annotation-queues/components/CreateNewAnnotationQueueItem";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { usdFormatter } from "@/src/utils/numbers";
 import { calculateDisplayTotalCost } from "@/src/components/trace/lib/helpers";
 import { useIsAuthenticatedAndProjectMember } from "@/src/features/auth/hooks";
@@ -36,14 +37,24 @@ import { Tabs, TabsList, TabsTrigger } from "@/src/components/ui/tabs";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { useRouter } from "next/router";
 import { CopyIdsPopover } from "@/src/components/trace/CopyIdsPopover";
+import { useJsonExpansion } from "@/src/components/trace/JsonExpansionContext";
+import { TraceLogView } from "@/src/components/trace/TraceLogView";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/src/components/ui/tooltip";
+import TagList from "@/src/features/tag/components/TagList";
 import { TraceThumbsFeedback } from "@/src/components/trace/TraceThumbsFeedback";
 
 export const TracePreview = ({
   trace,
   observations,
-  scores,
+  serverScores: scores,
   commentCounts,
   viewType = "detailed",
+  showCommentButton = false,
 }: {
   trace: Omit<TraceDomain, "input" | "output" | "metadata"> & {
     latency?: number;
@@ -52,19 +63,20 @@ export const TracePreview = ({
     metadata: string | null;
   };
   observations: ObservationReturnTypeWithMetadata[];
-  scores: APIScoreV2[];
+  serverScores: APIScoreV2[];
   commentCounts?: Map<string, number>;
   viewType?: "detailed" | "focused";
+  showCommentButton?: boolean;
 }) => {
   const [selectedTab, setSelectedTab] = useQueryParam(
     "view",
     withDefault(StringParam, "preview"),
   );
-  const [currentView, setCurrentView] = useState<"pretty" | "json">("pretty");
+  const [currentView, setCurrentView] = useLocalStorage<"pretty" | "json">(
+    "jsonViewPreference",
+    "pretty",
+  );
   const [isPrettyViewAvailable, setIsPrettyViewAvailable] = useState(false);
-  const [emptySelectedConfigIds, setEmptySelectedConfigIds] = useLocalStorage<
-    string[]
-  >("emptySelectedConfigIds", []);
   const isAuthenticatedAndProjectMember = useIsAuthenticatedAndProjectMember(
     trace.projectId,
   );
@@ -72,6 +84,7 @@ export const TracePreview = ({
   const router = useRouter();
   const { peek } = router.query;
   const showScoresTab = isAuthenticatedAndProjectMember && peek === undefined;
+  const { expansionState, setFieldExpansion } = useJsonExpansion();
 
   const traceMedia = api.media.getByTraceOrObservationId.useQuery(
     {
@@ -98,13 +111,22 @@ export const TracePreview = ({
   const usageDetails = useMemo(
     () =>
       observations
-        .filter((o) => o.type === "GENERATION")
+        .filter((o) => isGenerationLike(o.type))
         .map((o) => o.usageDetails),
     [observations],
   );
 
+  // For performance reasons, we preemptively disable the log view if there are too many observations.
+  const isLogViewDisabled = observations.length > 150;
+  const showLogViewTab = observations.length > 0;
+  useEffect(() => {
+    if ((isLogViewDisabled || !showLogViewTab) && selectedTab === "log") {
+      setSelectedTab("preview");
+    }
+  }, [isLogViewDisabled, showLogViewTab, selectedTab, setSelectedTab]);
+
   return (
-    <div className="ph-no-capture col-span-2 flex h-full flex-1 flex-col overflow-hidden md:col-span-3">
+    <div className="col-span-2 flex h-full flex-1 flex-col overflow-hidden md:col-span-3">
       <div className="flex h-full flex-1 flex-col items-start gap-1 overflow-hidden">
         <div className="mt-3 grid w-full grid-cols-[auto,auto] items-start justify-between gap-2">
           <div className="flex w-full flex-row items-start gap-1">
@@ -136,10 +158,10 @@ export const TracePreview = ({
                       traceId: trace.id,
                     }}
                     scores={scores}
-                    emptySelectedConfigIds={emptySelectedConfigIds}
-                    setEmptySelectedConfigIds={setEmptySelectedConfigIds}
-                    hasGroupedButton={true}
-                    environment={trace.environment}
+                    scoreMetadata={{
+                      projectId: trace.projectId,
+                      environment: trace.environment,
+                    }}
                   />
                   <CreateNewAnnotationQueueItem
                     projectId={trace.projectId}
@@ -154,6 +176,14 @@ export const TracePreview = ({
                   count={commentCounts?.get(trace.id)}
                 />
               </>
+            )}
+            {viewType === "focused" && showCommentButton && (
+              <CommentDrawerButton
+                projectId={trace.projectId}
+                objectId={trace.id}
+                objectType="TRACE"
+                count={commentCounts?.get(trace.id)}
+              />
             )}
           </div>
         </div>
@@ -202,7 +232,7 @@ export const TracePreview = ({
                   {totalCost && (
                     <BreakdownTooltip
                       details={observations
-                        .filter((o) => o.type === "GENERATION")
+                        .filter((o) => isGenerationLike(o.type))
                         .map((o) => o.costDetails)}
                       isCost
                     >
@@ -237,36 +267,85 @@ export const TracePreview = ({
         </div>
 
         <TabsBar
-          value={selectedTab.includes("preview") ? "preview" : "scores"}
+          value={
+            selectedTab === "log"
+              ? "log"
+              : selectedTab.includes("preview")
+                ? "preview"
+                : "scores"
+          }
           className="flex min-h-0 flex-1 flex-col overflow-hidden"
-          onValueChange={(value) => setSelectedTab(value)}
+          onValueChange={(value) => {
+            capture("trace_detail:view_mode_switch", { mode: value });
+            setSelectedTab(value);
+          }}
         >
           {viewType === "detailed" && (
-            <TabsBarList>
-              <TabsBarTrigger value="preview">Preview</TabsBarTrigger>
-              {showScoresTab && (
-                <TabsBarTrigger value="scores">Scores</TabsBarTrigger>
-              )}
-              {selectedTab.includes("preview") && isPrettyViewAvailable && (
-                <Tabs
-                  className="ml-auto mr-1 h-fit px-2 py-0.5"
-                  value={currentView}
-                  onValueChange={(value) => {
-                    capture("trace_detail:io_mode_switch", { view: value });
-                    setCurrentView(value as "pretty" | "json");
-                  }}
-                >
-                  <TabsList className="h-fit py-0.5">
-                    <TabsTrigger value="pretty" className="h-fit px-1 text-xs">
-                      Formatted
-                    </TabsTrigger>
-                    <TabsTrigger value="json" className="h-fit px-1 text-xs">
-                      JSON
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-              )}
-            </TabsBarList>
+            <TooltipProvider>
+              <TabsBarList>
+                <TabsBarTrigger value="preview">Preview</TabsBarTrigger>
+                {showLogViewTab && (
+                  <TabsBarTrigger value="log" disabled={isLogViewDisabled}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>Log View (Beta)</span>
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs">
+                        {isLogViewDisabled
+                          ? `Log View is disabled for traces with more than 150 observations (this trace has ${observations.length})`
+                          : "Shows all observations concatenated. Great for quickly scanning through them. Nullish values are omitted."}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TabsBarTrigger>
+                )}
+                {showScoresTab && (
+                  <TabsBarTrigger value="scores">Scores</TabsBarTrigger>
+                )}
+                {selectedTab.includes("preview") && isPrettyViewAvailable && (
+                  <Tabs
+                    className="ml-auto mr-1 h-fit px-2 py-0.5"
+                    value={currentView}
+                    onValueChange={(value) => {
+                      capture("trace_detail:io_mode_switch", { view: value });
+                      setCurrentView(value as "pretty" | "json");
+                    }}
+                  >
+                    <TabsList className="h-fit py-0.5">
+                      <TabsTrigger
+                        value="pretty"
+                        className="h-fit px-1 text-xs"
+                      >
+                        Formatted
+                      </TabsTrigger>
+                      <TabsTrigger value="json" className="h-fit px-1 text-xs">
+                        JSON
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                )}
+                {selectedTab === "log" && (
+                  <Tabs
+                    className="ml-auto mr-1 h-fit px-2 py-0.5"
+                    value={currentView}
+                    onValueChange={(value) => {
+                      setCurrentView(value as "pretty" | "json");
+                    }}
+                  >
+                    <TabsList className="h-fit py-0.5">
+                      <TabsTrigger
+                        value="pretty"
+                        className="h-fit px-1 text-xs"
+                      >
+                        Formatted
+                      </TabsTrigger>
+                      <TabsTrigger value="json" className="h-fit px-1 text-xs">
+                        JSON
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                )}
+              </TabsBarList>
+            </TooltipProvider>
           )}
           {/* show preview always if not detailed view */}
           <TabsBarContent
@@ -274,28 +353,50 @@ export const TracePreview = ({
             className="mt-0 flex max-h-full min-h-0 w-full flex-1 pr-3"
           >
             <div className="mb-2 flex max-h-full min-h-0 w-full flex-col gap-2 overflow-y-auto">
-              <div>
-                <IOPreview
-                  key={trace.id + "-io"}
-                  input={trace.input ?? undefined}
-                  output={trace.output ?? undefined}
-                  media={traceMedia.data}
-                  currentView={currentView}
-                  setIsPrettyViewAvailable={setIsPrettyViewAvailable}
-                />
+              <IOPreview
+                key={trace.id + "-io"}
+                input={trace.input ?? undefined}
+                output={trace.output ?? undefined}
+                media={traceMedia.data}
+                currentView={currentView}
+                setIsPrettyViewAvailable={setIsPrettyViewAvailable}
+                inputExpansionState={expansionState.input}
+                outputExpansionState={expansionState.output}
+                onInputExpansionChange={(expansion) =>
+                  setFieldExpansion("input", expansion)
+                }
+                onOutputExpansionChange={(expansion) =>
+                  setFieldExpansion("output", expansion)
+                }
+              />
+
+              <div className="text-sm font-medium">{"Tags"}</div>
+              <div className="flex flex-wrap gap-x-1 gap-y-1">
+                <TagList selectedTags={trace.tags} isLoading={false} />
               </div>
-              <div>
-                <PrettyJsonView
-                  key={trace.id + "-metadata"}
-                  title="Metadata"
-                  json={trace.metadata}
-                  media={
-                    traceMedia.data?.filter((m) => m.field === "metadata") ?? []
-                  }
-                  currentView={currentView}
-                />
-              </div>
+
+              <PrettyJsonView
+                key={trace.id + "-metadata"}
+                title="Metadata"
+                json={trace.metadata}
+                media={
+                  traceMedia.data?.filter((m) => m.field === "metadata") ?? []
+                }
+                currentView={currentView}
+                externalExpansionState={expansionState.metadata}
+                onExternalExpansionChange={(expansion) =>
+                  setFieldExpansion("metadata", expansion)
+                }
+              />
             </div>
+          </TabsBarContent>
+          <TabsBarContent value="log">
+            <TraceLogView
+              observations={observations}
+              traceId={trace.id}
+              projectId={trace.projectId}
+              currentView={currentView}
+            />
           </TabsBarContent>
           {showScoresTab && (
             <TabsBarContent

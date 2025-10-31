@@ -1,12 +1,16 @@
 import { PrettyJsonView } from "@/src/components/ui/PrettyJsonView";
-import { AnnotationQueueObjectType, type APIScoreV2 } from "@langfuse/shared";
+import {
+  AnnotationQueueObjectType,
+  type APIScoreV2,
+  isGenerationLike,
+} from "@langfuse/shared";
 import { Badge } from "@/src/components/ui/badge";
 import { type ObservationReturnType } from "@/src/server/api/routers/traces";
 import { api } from "@/src/utils/api";
 import { IOPreview } from "@/src/components/trace/IOPreview";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import Link from "next/link";
-import { usdFormatter } from "@/src/utils/numbers";
+import { usdFormatter, formatTokenCounts } from "@/src/utils/numbers";
 import { withDefault, StringParam, useQueryParam } from "use-query-params";
 import ScoresTable from "@/src/components/table/use-cases/scores";
 import { JumpToPlaygroundButton } from "@/src/features/playground/page/components/JumpToPlaygroundButton";
@@ -34,45 +38,53 @@ import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePos
 import { Tabs, TabsList, TabsTrigger } from "@/src/components/ui/tabs";
 import { useRouter } from "next/router";
 import { CopyIdsPopover } from "@/src/components/trace/CopyIdsPopover";
+import { useJsonExpansion } from "@/src/components/trace/JsonExpansionContext";
 
 export const ObservationPreview = ({
   observations,
   projectId,
-  scores,
+  serverScores: scores,
   currentObservationId,
   traceId,
   commentCounts,
   viewType = "detailed",
   isTimeline,
+  showCommentButton = false,
 }: {
   observations: Array<ObservationReturnType>;
   projectId: string;
-  scores: APIScoreV2[];
+  serverScores: APIScoreV2[];
   currentObservationId: string;
   traceId: string;
   commentCounts?: Map<string, number>;
   viewType?: "focused" | "detailed";
   isTimeline?: boolean;
+  showCommentButton?: boolean;
 }) => {
   const [selectedTab, setSelectedTab] = useQueryParam(
     "view",
     withDefault(StringParam, "preview"),
   );
-  const [currentView, setCurrentView] = useState<"pretty" | "json">("pretty");
+  const [currentView, setCurrentView] = useLocalStorage<"pretty" | "json">(
+    "jsonViewPreference",
+    "pretty",
+  );
   const capture = usePostHogClientCapture();
   const [isPrettyViewAvailable, setIsPrettyViewAvailable] = useState(false);
-  const [emptySelectedConfigIds, setEmptySelectedConfigIds] = useLocalStorage<
-    string[]
-  >("emptySelectedConfigIds", []);
 
   const isAuthenticatedAndProjectMember =
     useIsAuthenticatedAndProjectMember(projectId);
   const router = useRouter();
   const { peek } = router.query;
   const showScoresTab = isAuthenticatedAndProjectMember && peek === undefined;
+  const { expansionState, setFieldExpansion } = useJsonExpansion();
 
   const currentObservation = observations.find(
     (o) => o.id === currentObservationId,
+  );
+
+  const currentObservationScores = scores.filter(
+    (s) => s.observationId === currentObservationId,
   );
 
   const observationWithInputAndOutput = api.observations.byId.useQuery({
@@ -119,7 +131,7 @@ export const ObservationPreview = ({
   if (!preloadedObservation) return <div className="flex-1">Not found</div>;
 
   return (
-    <div className="ph-no-capture col-span-2 flex h-full flex-1 flex-col overflow-hidden md:col-span-3">
+    <div className="col-span-2 flex h-full flex-1 flex-col overflow-hidden md:col-span-3">
       <div className="flex h-full flex-1 flex-col items-start gap-1 overflow-hidden">
         <div className="mt-3 grid w-full grid-cols-[auto,auto] items-start justify-between gap-2">
           <div className="flex w-full flex-row items-start gap-1">
@@ -159,11 +171,11 @@ export const ObservationPreview = ({
                       traceId: traceId,
                       observationId: preloadedObservation.id,
                     }}
-                    scores={scores}
-                    emptySelectedConfigIds={emptySelectedConfigIds}
-                    setEmptySelectedConfigIds={setEmptySelectedConfigIds}
-                    hasGroupedButton={true}
-                    environment={preloadedObservation.environment}
+                    scores={currentObservationScores}
+                    scoreMetadata={{
+                      projectId: projectId,
+                      environment: preloadedObservation.environment,
+                    }}
                   />
 
                   <CreateNewAnnotationQueueItem
@@ -172,14 +184,15 @@ export const ObservationPreview = ({
                     objectType={AnnotationQueueObjectType.OBSERVATION}
                   />
                 </div>
-                {observationWithInputAndOutput.data?.type === "GENERATION" && (
-                  <JumpToPlaygroundButton
-                    source="generation"
-                    generation={observationWithInputAndOutput.data}
-                    analyticsEventName="trace_detail:test_in_playground_button_click"
-                    className={cn(isTimeline ? "!hidden" : "")}
-                  />
-                )}
+                {observationWithInputAndOutput.data &&
+                  isGenerationLike(observationWithInputAndOutput.data.type) && (
+                    <JumpToPlaygroundButton
+                      source="generation"
+                      generation={observationWithInputAndOutput.data}
+                      analyticsEventName="trace_detail:test_in_playground_button_click"
+                      className={cn(isTimeline ? "!hidden" : "")}
+                    />
+                  )}
                 <CommentDrawerButton
                   projectId={preloadedObservation.projectId}
                   objectId={preloadedObservation.id}
@@ -187,6 +200,14 @@ export const ObservationPreview = ({
                   count={commentCounts?.get(preloadedObservation.id)}
                 />
               </>
+            )}
+            {viewType === "focused" && showCommentButton && (
+              <CommentDrawerButton
+                projectId={preloadedObservation.projectId}
+                objectId={preloadedObservation.id}
+                objectType="OBSERVATION"
+                count={commentCounts?.get(preloadedObservation.id)}
+              />
             )}
           </div>
         </div>
@@ -254,7 +275,7 @@ export const ObservationPreview = ({
                       projectId={preloadedObservation.projectId}
                     />
                   ) : undefined}
-                  {preloadedObservation.type === "GENERATION" && (
+                  {isGenerationLike(preloadedObservation.type) && (
                     <BreakdownTooltip
                       details={preloadedObservation.usageDetails}
                       isCost={false}
@@ -264,9 +285,12 @@ export const ObservationPreview = ({
                         className="flex items-center gap-1"
                       >
                         <span>
-                          {preloadedObservation.inputUsage} prompt →{" "}
-                          {preloadedObservation.outputUsage} completion (∑{" "}
-                          {preloadedObservation.totalUsage})
+                          {formatTokenCounts(
+                            preloadedObservation.inputUsage,
+                            preloadedObservation.outputUsage,
+                            preloadedObservation.totalUsage,
+                            true,
+                          )}
                         </span>
                         <InfoIcon className="h-3 w-3" />
                       </Badge>
@@ -400,10 +424,21 @@ export const ObservationPreview = ({
                   output={
                     observationWithInputAndOutput.data?.output ?? undefined
                   }
+                  metadata={
+                    observationWithInputAndOutput.data?.metadata ?? undefined
+                  }
                   isLoading={observationWithInputAndOutput.isLoading}
                   media={observationMedia.data}
                   currentView={currentView}
                   setIsPrettyViewAvailable={setIsPrettyViewAvailable}
+                  inputExpansionState={expansionState.input}
+                  outputExpansionState={expansionState.output}
+                  onInputExpansionChange={(expansion) =>
+                    setFieldExpansion("input", expansion)
+                  }
+                  onOutputExpansionChange={(expansion) =>
+                    setFieldExpansion("output", expansion)
+                  }
                 />
               </div>
               <div>
@@ -426,6 +461,10 @@ export const ObservationPreview = ({
                       (m) => m.field === "metadata",
                     )}
                     currentView={currentView}
+                    externalExpansionState={expansionState.metadata}
+                    onExternalExpansionChange={(expansion) =>
+                      setFieldExpansion("metadata", expansion)
+                    }
                   />
                 )}
               </div>

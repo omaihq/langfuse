@@ -140,14 +140,14 @@ export const EditDatasetItem = ({
             ) : null}
             <Button
               type="submit"
-              loading={updateDatasetItemMutation.isLoading}
+              loading={updateDatasetItemMutation.isPending}
               disabled={!hasChanges || !hasAccess}
               variant={hasChanges ? "default" : "ghost"}
             >
               {hasChanges ? "Save changes" : "Saved"}
             </Button>
           </div>
-          <div className="ph-no-capture flex-1 overflow-auto">
+          <div className="flex-1 overflow-auto">
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField

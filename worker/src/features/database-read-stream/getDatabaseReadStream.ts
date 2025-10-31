@@ -3,10 +3,11 @@ import {
   FilterCondition,
   TimeFilter,
   BatchExportQueryType,
-  ScoreDomain,
   evalDatasetFormFilterCols,
   OrderByState,
   TracingSearchType,
+  ScoreDataType,
+  isPresent,
 } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 import {
@@ -24,6 +25,7 @@ import {
   getScoresForTraces,
   tableColumnsToSqlFilterAndPrefix,
   getTraceIdentifiers,
+  getDatasetRunItemsCh,
 } from "@langfuse/shared/src/server";
 import Decimal from "decimal.js";
 import { env } from "../../env";
@@ -52,12 +54,12 @@ const isGenerationTimestampFilter = (
 ): filter is TimeFilter => {
   return filter.column === "Start Time" && filter.type === "datetime";
 };
-const isTraceTimestampFilter = (
+export const isTraceTimestampFilter = (
   filter: FilterCondition,
 ): filter is TimeFilter => {
   return filter.column === "Timestamp" && filter.type === "datetime";
 };
-const getChunkWithFlattenedScores = <
+export const getChunkWithFlattenedScores = <
   T extends BatchExportTracesRow[] | FullObservationsWithScores,
 >(
   chunk: T,
@@ -85,7 +87,7 @@ const getChunkWithFlattenedScores = <
   });
 };
 
-export const getDatabaseReadStream = async ({
+export const getDatabaseReadStreamPaginated = async ({
   projectId,
   tableName,
   filter,
@@ -135,25 +137,46 @@ export const getDatabaseReadStream = async ({
             clickhouseConfigs,
           });
 
-          return scores.map((score) => ({
-            id: score.id,
-            traceId: score.traceId,
-            sessionId: score.sessionId,
-            datasetRunId: score.datasetRunId,
-            timestamp: score.timestamp,
-            source: score.source,
-            name: score.name,
-            dataType: score.dataType,
-            value: score.value,
-            stringValue: score.stringValue,
-            comment: score.comment,
-            metadata: score.metadata,
-            observationId: score.observationId,
-            traceName: score.traceName,
-            userId: score.traceUserId,
-            traceTags: score.traceTags,
-            environment: score.environment,
-          }));
+          // Get author user info for scores
+          // Only users that have valid project write access may write scores
+          // Only users with at least MEMBER permissions (projectMembers:read) may trigger batch exports
+          const users = await prisma.user.findMany({
+            where: {
+              id: {
+                in: scores
+                  .map((score) => score.authorUserId)
+                  .filter((s): s is string => Boolean(s)),
+              },
+            },
+            select: {
+              id: true,
+              name: true,
+            },
+          });
+
+          return scores.map((score) => {
+            const user = users.find((u) => u.id === score.authorUserId);
+            return {
+              id: score.id,
+              traceId: score.traceId,
+              sessionId: score.sessionId,
+              datasetRunId: score.datasetRunId,
+              timestamp: score.timestamp,
+              source: score.source,
+              name: score.name,
+              dataType: score.dataType,
+              value: score.value,
+              stringValue: score.stringValue,
+              comment: score.comment,
+              metadata: score.metadata,
+              observationId: score.observationId,
+              traceName: score.traceName,
+              userId: score.traceUserId,
+              traceTags: score.traceTags,
+              environment: score.environment,
+              authorUserName: user?.name ?? null,
+            };
+          });
         },
         env.BATCH_EXPORT_PAGE_SIZE,
         rowLimit,
@@ -391,47 +414,47 @@ export const getDatabaseReadStream = async ({
     case "dataset_run_items": {
       return new DatabaseReadStream<unknown>(
         async (pageSize: number, offset: number) => {
-          const condition = tableColumnsToSqlFilterAndPrefix(
-            filter ?? [],
-            evalDatasetFormFilterCols,
-            "dataset_items",
-          );
+          const items = await getDatasetRunItemsCh({
+            projectId,
+            filter: filter
+              ? [...filter, createdAtCutoffFilter]
+              : [createdAtCutoffFilter],
+            limit: pageSize,
+            orderBy: {
+              column: "createdAt",
+              order: "DESC",
+            },
+            offset,
+            clickhouseConfigs,
+          });
 
-          const items = await prisma.$queryRaw<
-            Array<{
-              id: string;
-              project_id: string;
-              dataset_item_id: string;
-              trace_id: string;
-              observation_id: string | null;
-              created_at: Date;
-              updated_at: Date;
-              dataset_name: string;
-            }>
-          >`
-            SELECT dri.*, d.name as dataset_name
+          // fetch all project dataset names
+          const datasets = await prisma.dataset.findMany({
+            where: {
+              projectId,
+            },
+            select: {
+              id: true,
+              name: true,
+            },
+          });
 
-            FROM dataset_run_items dri 
-              JOIN dataset_items di ON dri.dataset_item_id = di.id AND dri.project_id = di.project_id 
-              JOIN datasets d ON di.dataset_id = d.id AND d.project_id = dri.project_id
-            WHERE dri.project_id = ${projectId}
-            AND dri.created_at < ${cutoffCreatedAt}
-            ${condition}
-            ORDER BY dri.created_at DESC
-            LIMIT ${pageSize}
-            OFFSET ${offset}
-          `;
+          return items.map((item) => {
+            const datasetName = datasets.find(
+              (d) => d.id === item.datasetId,
+            )?.name;
 
-          return items.map((item) => ({
-            id: item.id,
-            projectId: item.project_id,
-            datasetItemId: item.dataset_item_id,
-            traceId: item.trace_id,
-            observationId: item.observation_id,
-            createdAt: item.created_at,
-            updatedAt: item.updated_at,
-            datasetName: item.dataset_name,
-          }));
+            return {
+              id: item.id,
+              projectId: item.projectId,
+              datasetItemId: item.datasetItemId,
+              traceId: item.traceId,
+              observationId: item.observationId,
+              createdAt: item.createdAt,
+              updatedAt: item.updatedAt,
+              datasetName: datasetName ?? "Unknown",
+            };
+          });
         },
         env.BATCH_EXPORT_PAGE_SIZE,
         rowLimit,
@@ -558,15 +581,22 @@ export const getDatabaseReadStream = async ({
 };
 
 export function prepareScoresForOutput(
-  filteredScores: ScoreDomain[],
+  scores: {
+    name: string;
+    stringValue: string | null;
+    dataType: ScoreDataType;
+    value: number | null;
+  }[],
 ): Record<string, string[] | number[]> {
-  return filteredScores.reduce(
+  return scores.reduce(
     (acc, score) => {
       // If this score name already exists in acc, use its existing type
       const existingValues = acc[score.name];
       const newValue =
-        score.dataType === "NUMERIC" ? score.value : score.stringValue;
-      if (!newValue) return acc;
+        score.dataType === "NUMERIC" || score.dataType === "BOOLEAN"
+          ? score.value
+          : score.stringValue;
+      if (!isPresent(newValue)) return acc;
 
       if (!existingValues) {
         // First value determines the type
