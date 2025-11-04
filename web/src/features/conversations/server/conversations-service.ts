@@ -77,3 +77,81 @@ export const getFilteredSessions = async (props: {
 
   return res;
 };
+
+/**
+ * Optimized version for fetching all sessions without pre-fetching user list.
+ * Optionally filters by a single accountId if provided.
+ * Scales efficiently even with 100k+ users.
+ */
+export const getAllSessionsWithOptionalUserFilter = async (props: {
+  projectId: string;
+  accountId?: string;
+  orderBy?: OrderByState;
+  limit?: number;
+  page?: number;
+}) => {
+  const { projectId, accountId, orderBy, limit, page } = props;
+
+  // Build the user filter condition dynamically
+  const userFilterCondition = accountId
+    ? "AND t.user_id = {accountId: String}"
+    : "";
+
+  const query = `
+    WITH deduplicated_traces AS (
+      SELECT * EXCEPT input, output, metadata
+      FROM traces t
+      WHERE t.session_id IS NOT NULL 
+        AND t.project_id = {projectId: String}
+        AND t.user_id IS NOT NULL
+        AND t.user_id != ''
+        ${userFilterCondition}
+        ORDER BY event_ts DESC
+        LIMIT 1 BY id, project_id
+    ),
+    session_data AS (
+        SELECT
+            t.session_id,
+            min(t.timestamp) as min_timestamp,
+            groupUniqArray(t.user_id) AS user_ids
+        FROM deduplicated_traces t
+        WHERE t.session_id IS NOT NULL
+            AND t.project_id = {projectId: String}
+            AND t.user_id IS NOT NULL
+            AND t.user_id != ''
+            ${userFilterCondition}
+        GROUP BY t.session_id
+    )
+    SELECT 
+        session_id,
+        user_ids,
+        min_timestamp
+    FROM session_data s
+    WHERE length(user_ids) > 0
+    ${orderByToClickhouseSql(orderBy ?? null, sessionCols)}
+    ${limit !== undefined && page !== undefined ? `LIMIT {limit: Int32} OFFSET {offset: Int32}` : ""}
+    `;
+
+  const params: Record<string, unknown> = {
+    projectId,
+    limit: limit,
+    offset: limit && page ? limit * page : 0,
+  };
+
+  // Only add accountId to params if it's provided
+  if (accountId) {
+    params.accountId = accountId;
+  }
+
+  const res = await queryClickhouse<SimplifiedSessionData>({
+    query: query,
+    params: params,
+    tags: {
+      feature: "conversations",
+      type: "all-sessions-optional-filter",
+      projectId,
+    },
+  });
+
+  return res;
+};
