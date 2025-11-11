@@ -10,8 +10,7 @@ import {
   ChatMessageType,
   type ChatMessage,
   PromptService,
-  PROMPT_EXPERIMENT_ENVIRONMENT,
-  TraceParams,
+  type TraceSinkParams,
   compileChatMessages,
   extractPlaceholderNames,
   type MessagePlaceholderValues,
@@ -27,6 +26,7 @@ import {
   type Prisma,
   PromptType,
   QUEUE_ERROR_MESSAGES,
+  PROMPT_EXPERIMENT_ENVIRONMENT,
   stringifyValue,
 } from "@langfuse/shared";
 import { backOff } from "exponential-backoff";
@@ -355,18 +355,11 @@ export const createExperimentJob = async ({
      * LLM MODEL CALL *
      ********************/
 
-    const traceParams: Omit<TraceParams, "tokenCountDelegate"> = {
+    const traceSinkParams: TraceSinkParams = {
       environment: PROMPT_EXPERIMENT_ENVIRONMENT,
       traceName: `dataset-run-item-${runItem.id.slice(0, 5)}`,
       traceId: newTraceId,
-      projectId: event.projectId,
-      authCheck: {
-        validKey: true as const,
-        scope: {
-          projectId: event.projectId,
-          accessLevel: "project",
-        } as any,
-      },
+      targetProjectId: event.projectId,
     };
 
     // Check if prompt config has response_format for structured output
@@ -389,7 +382,7 @@ export const createExperimentJob = async ({
             provider,
             model,
             promptConfig.structured_output, // structuredOutputSchema
-            traceParams,
+            traceSinkParams,
           ),
         {
           numOfAttempts: 1, // turn off retries as Langchain is doing that for us already.
@@ -405,7 +398,7 @@ export const createExperimentJob = async ({
             model_params,
             provider,
             model,
-            traceParams,
+            traceSinkParams,
           ),
         {
           numOfAttempts: 1, // turn off retries as Langchain is doing that for us already.

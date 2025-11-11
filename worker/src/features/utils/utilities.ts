@@ -1,6 +1,17 @@
 import crypto from "node:crypto";
-import { logger } from "@langfuse/shared/src/server";
+import {
+  logger,
+  fetchLLMCompletion,
+  type TraceSinkParams,
+  type ChatMessage,
+  LLMApiKeySchema,
+  ZodModelConfig,
+} from "@langfuse/shared/src/server";
+import { decrypt } from "@langfuse/shared/encryption";
+import { ApiError } from "@langfuse/shared";
 import Handlebars from "handlebars";
+import { z } from "zod";
+import { type ZodSchema } from "zod";
 
 /**
  * Standard error handling for LLM operations
@@ -33,22 +44,25 @@ async function withLLMErrorHandling<T>(
   }
 }
 
-export async function callStructuredLLM<T extends ZodV3Schema>(
+export async function callStructuredLLM<T extends ZodSchema>(
   jeId: string,
-  llmApiKey: z.infer<typeof LLMApiKeySchema>,
+  llmApiKey: any,
   messages: ChatMessage[],
-  modelParams: z.infer<typeof ZodModelConfig>,
+  modelParams: any,
   provider: string,
   model: string,
   structuredOutputSchema: T,
-  traceParams?: Omit<TraceParams, "tokenCountDelegate">,
-): Promise<zodV3.infer<T>> {
+  traceSinkParams?: TraceSinkParams,
+): Promise<z.infer<T>> {
   return withLLMErrorHandling(async () => {
-    const { completion } = await fetchLLMCompletion({
+    const completion = await fetchLLMCompletion({
       streaming: false,
-      apiKey: decrypt(llmApiKey.secretKey), // decrypt the secret key
-      extraHeaders: decryptAndParseExtraHeaders(llmApiKey.extraHeaders),
-      baseURL: llmApiKey.baseURL || undefined,
+      llmConnection: {
+        secretKey: decrypt(llmApiKey.secretKey),
+        extraHeaders: llmApiKey.extraHeaders,
+        baseURL: llmApiKey.baseURL,
+        config: llmApiKey.config as Record<string, string> | null,
+      },
       messages,
       modelParams: {
         provider,
@@ -56,36 +70,32 @@ export async function callStructuredLLM<T extends ZodV3Schema>(
         adapter: llmApiKey.adapter,
         ...modelParams,
       },
-      traceParams: traceParams
-        ? { ...traceParams, tokenCountDelegate: tokenCount }
-        : undefined,
       structuredOutputSchema,
-      config: llmApiKey.config,
+      traceSinkParams,
       maxRetries: 1,
     });
 
-    if (traceParams) {
-      await processTracedEvents();
-    }
-
-    return structuredOutputSchema.parse(completion);
-  }, "call LLM");
+    return completion as z.infer<T>;
+  }, "call structured LLM");
 }
 
 export async function callLLM(
-  llmApiKey: z.infer<typeof LLMApiKeySchema>,
+  llmApiKey: any,
   messages: ChatMessage[],
-  modelParams: z.infer<typeof ZodModelConfig>,
+  modelParams: any,
   provider: string,
   model: string,
-  traceParams?: Omit<TraceParams, "tokenCountDelegate">,
+  traceSinkParams?: TraceSinkParams,
 ): Promise<string> {
   return withLLMErrorHandling(async () => {
-    const { completion, processTracedEvents } = await fetchLLMCompletion({
+    const completion = await fetchLLMCompletion({
       streaming: false,
-      apiKey: decrypt(llmApiKey.secretKey),
-      extraHeaders: decryptAndParseExtraHeaders(llmApiKey.extraHeaders),
-      baseURL: llmApiKey.baseURL || undefined,
+      llmConnection: {
+        secretKey: decrypt(llmApiKey.secretKey),
+        extraHeaders: llmApiKey.extraHeaders,
+        baseURL: llmApiKey.baseURL,
+        config: llmApiKey.config as Record<string, string> | null,
+      },
       messages,
       modelParams: {
         provider,
@@ -93,17 +103,9 @@ export async function callLLM(
         adapter: llmApiKey.adapter,
         ...modelParams,
       },
-      config: llmApiKey.config,
-      traceParams: traceParams
-        ? { ...traceParams, tokenCountDelegate: tokenCount }
-        : undefined,
+      traceSinkParams,
       maxRetries: 1,
-      throwOnError: false,
     });
-
-    if (traceParams) {
-      await processTracedEvents();
-    }
 
     return completion;
   }, "call LLM");
