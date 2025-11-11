@@ -35,7 +35,10 @@ export function AccountsPage() {
       label: "Synthetic Users",
       value: "synthetic",
       href: `/project/${projectId}/accounts`,
-      querySelector: (query: ParsedUrlQuery) => ({ ...query, tab: "synthetic" }),
+      querySelector: (query: ParsedUrlQuery) => ({
+        ...query,
+        tab: "synthetic",
+      }),
     },
     {
       label: "Snapshot Users",

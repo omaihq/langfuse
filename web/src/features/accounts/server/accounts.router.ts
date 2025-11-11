@@ -244,18 +244,19 @@ export const accountsRouter = createTRPCRouter({
 
       // Create Supabase Auth user (similar to real users), using the hardcoded password
       const supabaseAuth = createSupabaseAdminClient();
-      const { data: authData, error: authError } = await supabaseAuth.auth.signUp({
-        email,
-        password: HARDCODED_USER_PASSWORD,
-        options: {
-          data: {
-            name: input.username,
-            full_name: input.username,
-            email_verified: true,
-            phone_verified: false,
+      const { data: authData, error: authError } =
+        await supabaseAuth.auth.signUp({
+          email,
+          password: HARDCODED_USER_PASSWORD,
+          options: {
+            data: {
+              name: input.username,
+              full_name: input.username,
+              email_verified: true,
+              phone_verified: false,
+            },
           },
-        },
-      });
+        });
 
       if (authError) {
         console.error("Supabase Auth signup error:", authError);
