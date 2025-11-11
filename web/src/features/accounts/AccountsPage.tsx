@@ -1,5 +1,6 @@
 import Page from "@/src/components/layouts/page";
 import { useRouter } from "next/router";
+import { type ParsedUrlQuery } from "querystring";
 import { CreateUserDialog } from "@/src/features/accounts/CreateUserDialog";
 import { useQueryParam, withDefault, StringParam } from "use-query-params";
 import { SyntheticUsersPage } from "@/src/features/accounts/synthetic/SyntheticUsersPage";
@@ -27,17 +28,20 @@ export function AccountsPage() {
     {
       label: "Real Users",
       value: "real",
-      href: `/project/${projectId}/accounts?tab=real`,
+      href: `/project/${projectId}/accounts`,
+      querySelector: (query: ParsedUrlQuery) => ({ ...query, tab: "real" }),
     },
     {
       label: "Synthetic Users",
       value: "synthetic",
-      href: `/project/${projectId}/accounts?tab=synthetic`,
+      href: `/project/${projectId}/accounts`,
+      querySelector: (query: ParsedUrlQuery) => ({ ...query, tab: "synthetic" }),
     },
     {
       label: "Snapshot Users",
       value: "snapshot",
-      href: `/project/${projectId}/accounts?tab=snapshot`,
+      href: `/project/${projectId}/accounts`,
+      querySelector: (query: ParsedUrlQuery) => ({ ...query, tab: "snapshot" }),
     },
   ];
 
