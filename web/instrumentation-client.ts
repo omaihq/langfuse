@@ -7,7 +7,10 @@ const isEuOrUsRegionNonHipaa =
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
+  environment:
+    process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ||
+    process.env.NODE_ENV ||
+    "development",
   release: process.env.NEXT_PUBLIC_BUILD_ID,
 
   beforeSend(event, hint) {
