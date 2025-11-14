@@ -4,8 +4,6 @@ import {
   fetchLLMCompletion,
   type TraceSinkParams,
   type ChatMessage,
-  LLMApiKeySchema,
-  ZodModelConfig,
 } from "@langfuse/shared/src/server";
 import { decrypt } from "@langfuse/shared/encryption";
 import { ApiError } from "@langfuse/shared";
