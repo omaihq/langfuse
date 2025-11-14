@@ -1,18 +1,58 @@
 import { parseClickhouseUTCDateTimeFormat } from "./clickhouse";
 import { ObservationRecordReadType } from "./definitions";
-import { parseJsonPrioritised } from "../../utils/json";
 import {
   Observation,
   ObservationLevelType,
   ObservationType,
 } from "../../domain";
 import { parseMetadataCHRecordToDomain } from "../utils/metadata_conversion";
+import {
+  RenderingProps,
+  DEFAULT_RENDERING_PROPS,
+  applyInputOutputRendering,
+} from "../utils/rendering";
+import { logger } from "../logger";
+import type { Model, Price } from "@prisma/client";
+
+type ModelWithPrice = Model & { Price: Price[] };
+
+/**
+ * Enriches observation data with model pricing information
+ * @param model - The model with price data (can be null)
+ * @returns Object with modelId and pricing fields
+ */
+export const enrichObservationWithModelData = (
+  model: ModelWithPrice | null | undefined,
+) => {
+  return {
+    modelId: model?.id ?? null,
+    inputPrice:
+      model?.Price?.find((m) => m.usageType === "input")?.price ?? null,
+    outputPrice:
+      model?.Price?.find((m) => m.usageType === "output")?.price ?? null,
+    totalPrice:
+      model?.Price?.find((m) => m.usageType === "total")?.price ?? null,
+  };
+};
 
 export const convertObservation = (
   record: ObservationRecordReadType,
+  renderingProps: RenderingProps = DEFAULT_RENDERING_PROPS,
 ): Observation => {
   const reducedCostDetails = reduceUsageOrCostDetails(record.cost_details);
   const reducedUsageDetails = reduceUsageOrCostDetails(record.usage_details);
+
+  if (!record.start_time) {
+    logger.error(
+      `Found invalid value start_time: ${record.start_time} for record ${record.id} in project ${record.project_id}. Processing will fail.`,
+      {
+        ...record,
+        input: null,
+        output: null,
+        metadata: null,
+      },
+    );
+  }
 
   return {
     id: record.id,
@@ -30,12 +70,13 @@ export const convertObservation = (
     level: record.level as ObservationLevelType,
     statusMessage: record.status_message ?? null,
     version: record.version ?? null,
-    input: record.input ? (parseJsonPrioritised(record.input) ?? null) : null,
-    output: record.output
-      ? (parseJsonPrioritised(record.output) ?? null)
-      : null,
+    input: applyInputOutputRendering(record.input, renderingProps),
+    output: applyInputOutputRendering(record.output, renderingProps),
+    // Necessary if we fill this from events as model_parameters will be an object
     modelParameters: record.model_parameters
-      ? (JSON.parse(record.model_parameters) ?? null)
+      ? ((typeof record.model_parameters === "string"
+          ? JSON.parse(record.model_parameters)
+          : record.model_parameters) ?? null)
       : null,
     completionStartTime: record.completion_start_time
       ? parseClickhouseUTCDateTimeFormat(record.completion_start_time)
@@ -64,7 +105,7 @@ export const convertObservation = (
     model: record.provided_model_name ?? null,
     internalModelId: record.internal_model_id ?? null,
     promptName: record.prompt_name ?? null,
-    promptVersion: record.prompt_version ?? null,
+    promptVersion: record.prompt_version ? Number(record.prompt_version) : null,
     latency: record.end_time
       ? parseClickhouseUTCDateTimeFormat(record.end_time).getTime() -
         parseClickhouseUTCDateTimeFormat(record.start_time).getTime()

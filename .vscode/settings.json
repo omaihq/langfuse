@@ -29,5 +29,5 @@
   },
   "eslint.lintTask.enable": true,
   "eslint.workingDirectories": ["./web", "./worker"],
-  "workbench.colorTheme": "Default Dark Modern"
+  "eslint.useFlatConfig": false
 }

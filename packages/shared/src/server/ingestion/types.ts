@@ -202,6 +202,7 @@ const ENVIRONMENT_NAME_REGEX_ERROR_MESSAGE =
 
 const PublicEnvironmentName = z
   .string()
+  .toLowerCase()
   .max(40, "Maximum length is 40 characters")
   .regex(/^(?!langfuse)[a-z0-9-_]+$/, ENVIRONMENT_NAME_REGEX_ERROR_MESSAGE)
   .default("default");
@@ -223,6 +224,13 @@ export const eventTypes = {
   SPAN_UPDATE: "span-update",
   GENERATION_CREATE: "generation-create",
   GENERATION_UPDATE: "generation-update",
+  AGENT_CREATE: "agent-create",
+  TOOL_CREATE: "tool-create",
+  CHAIN_CREATE: "chain-create",
+  RETRIEVER_CREATE: "retriever-create",
+  EVALUATOR_CREATE: "evaluator-create",
+  EMBEDDING_CREATE: "embedding-create",
+  GUARDRAIL_CREATE: "guardrail-create",
   SDK_LOG: "sdk-log",
   DATASET_RUN_ITEM_CREATE: "dataset-run-item-create",
   // LEGACY, only required for backwards compatibility
@@ -473,6 +481,8 @@ const createAllIngestionSchemas = ({
     source: z
       .enum(["API", "EVAL", "ANNOTATION"])
       .default("API" as ScoreSourceType),
+    executionTraceId: z.string().nullish(),
+    queueId: z.string().nullish(),
   });
 
   const ScoreBody = applyScoreValidation(
@@ -564,6 +574,41 @@ const createAllIngestionSchemas = ({
     body: UpdateGenerationBody,
   });
 
+  const agentCreateEvent = base.extend({
+    type: z.literal(eventTypes.AGENT_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const toolCreateEvent = base.extend({
+    type: z.literal(eventTypes.TOOL_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const chainCreateEvent = base.extend({
+    type: z.literal(eventTypes.CHAIN_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const retrieverCreateEvent = base.extend({
+    type: z.literal(eventTypes.RETRIEVER_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const evaluatorCreateEvent = base.extend({
+    type: z.literal(eventTypes.EVALUATOR_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const embeddingCreateEvent = base.extend({
+    type: z.literal(eventTypes.EMBEDDING_CREATE),
+    body: CreateGenerationBody,
+  });
+
+  const guardrailCreateEvent = base.extend({
+    type: z.literal(eventTypes.GUARDRAIL_CREATE),
+    body: CreateGenerationBody,
+  });
+
   const scoreEvent = base.extend({
     type: z.literal(eventTypes.SCORE_CREATE),
     body: ScoreBody,
@@ -603,6 +648,13 @@ const createAllIngestionSchemas = ({
     spanUpdateEvent,
     generationCreateEvent,
     generationUpdateEvent,
+    agentCreateEvent,
+    toolCreateEvent,
+    chainCreateEvent,
+    retrieverCreateEvent,
+    evaluatorCreateEvent,
+    embeddingCreateEvent,
+    guardrailCreateEvent,
     sdkLogEvent,
     datasetRunItemCreateEvent,
     // LEGACY, only required for backwards compatibility
@@ -629,6 +681,13 @@ const createAllIngestionSchemas = ({
     spanUpdateEvent,
     generationCreateEvent,
     generationUpdateEvent,
+    agentCreateEvent,
+    toolCreateEvent,
+    chainCreateEvent,
+    retrieverCreateEvent,
+    evaluatorCreateEvent,
+    embeddingCreateEvent,
+    guardrailCreateEvent,
     scoreEvent,
     datasetRunItemCreateEvent,
     sdkLogEvent,
@@ -666,6 +725,13 @@ export const spanCreateEvent = publicSchemas.spanCreateEvent;
 export const spanUpdateEvent = publicSchemas.spanUpdateEvent;
 export const generationCreateEvent = publicSchemas.generationCreateEvent;
 export const generationUpdateEvent = publicSchemas.generationUpdateEvent;
+export const agentCreateEvent = publicSchemas.agentCreateEvent;
+export const toolCreateEvent = publicSchemas.toolCreateEvent;
+export const chainCreateEvent = publicSchemas.chainCreateEvent;
+export const retrieverCreateEvent = publicSchemas.retrieverCreateEvent;
+export const evaluatorCreateEvent = publicSchemas.evaluatorCreateEvent;
+export const embeddingCreateEvent = publicSchemas.embeddingCreateEvent;
+export const guardrailCreateEvent = publicSchemas.guardrailCreateEvent;
 export const scoreEvent = publicSchemas.scoreEvent;
 export const sdkLogEvent = publicSchemas.sdkLogEvent;
 export const datasetRunItemCreateEvent =
@@ -707,4 +773,11 @@ export type ObservationEvent =
   | z.infer<typeof spanCreateEvent>
   | z.infer<typeof spanUpdateEvent>
   | z.infer<typeof generationCreateEvent>
-  | z.infer<typeof generationUpdateEvent>;
+  | z.infer<typeof generationUpdateEvent>
+  | z.infer<typeof agentCreateEvent>
+  | z.infer<typeof toolCreateEvent>
+  | z.infer<typeof chainCreateEvent>
+  | z.infer<typeof retrieverCreateEvent>
+  | z.infer<typeof evaluatorCreateEvent>
+  | z.infer<typeof embeddingCreateEvent>
+  | z.infer<typeof guardrailCreateEvent>;

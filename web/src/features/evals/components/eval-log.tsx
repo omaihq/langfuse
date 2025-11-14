@@ -4,12 +4,13 @@ import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import TableLink from "@/src/components/table/table-link";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
-import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
+import { IOTableCell } from "@/src/components/ui/IOTableCell";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
 import { evalExecutionsFilterCols } from "@/src/server/api/definitions/evalExecutionsTable";
 import { type RouterOutputs, api } from "@/src/utils/api";
+import { safeExtract } from "@/src/utils/map-utils";
 import { type Prisma } from "@langfuse/shared";
 import { createColumnHelper } from "@tanstack/react-table";
 import { useQueryParams, withDefault, NumberParam } from "use-query-params";
@@ -23,6 +24,7 @@ export type JobExecutionRow = {
   startTime?: string;
   endTime?: string;
   traceId?: string;
+  executionTraceId?: string;
   templateId: string;
   evaluatorId: string;
   error?: string;
@@ -121,7 +123,21 @@ export default function EvalLogTable({
     }),
     columnHelper.accessor("traceId", {
       id: "traceId",
-      header: "Trace",
+      header: "Target Trace",
+      cell: (row) => {
+        const traceId = row.getValue();
+        return traceId ? (
+          <TableLink
+            path={`/project/${projectId}/traces/${encodeURIComponent(traceId)}`}
+            value={traceId}
+          />
+        ) : undefined;
+      },
+    }),
+    columnHelper.accessor("executionTraceId", {
+      id: "executionTraceId",
+      header: "Execution Trace",
+      enableHiding: true,
       cell: (row) => {
         const traceId = row.getValue();
         return traceId ? (
@@ -185,6 +201,7 @@ export default function EvalLogTable({
       startTime: jobConfig.startTime?.toLocaleString() ?? undefined,
       endTime: jobConfig.endTime?.toLocaleString() ?? undefined,
       traceId: jobConfig.jobInputTraceId ?? undefined,
+      executionTraceId: jobConfig.executionTraceId ?? undefined,
       templateId: jobConfig.jobTemplateId ?? "",
       evaluatorId: jobConfig.jobConfigurationId,
       error: jobConfig.error ?? undefined,
@@ -220,7 +237,9 @@ export default function EvalLogTable({
               : {
                   isLoading: false,
                   isError: false,
-                  data: logs.data.data.map((t) => convertToTableRow(t)),
+                  data: safeExtract(logs.data, "data", []).map((t) =>
+                    convertToTableRow(t),
+                  ),
                 }
         }
         pagination={{

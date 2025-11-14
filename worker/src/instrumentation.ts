@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import dd from "dd-trace";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
@@ -16,6 +17,25 @@ import {
 import { awsEcsDetectorSync } from "@opentelemetry/resource-detector-aws";
 import { containerDetector } from "@opentelemetry/resource-detector-container";
 import { env } from "./env";
+
+// Initialize Sentry for worker error tracking
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment:
+    process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || "development",
+  release: process.env.BUILD_ID,
+
+  // Set tracesSampleRate to 1.0 to capture 100%
+  // of transactions for performance monitoring.
+  tracesSampleRate: process.env.LANGFUSE_TRACING_SAMPLE_RATE
+    ? Number(process.env.LANGFUSE_TRACING_SAMPLE_RATE)
+    : 0,
+
+  // Set profilesSampleRate to 1.0 to profile every transaction.
+  profilesSampleRate: 0.5,
+
+  debug: false,
+});
 
 dd.init({
   runtimeMetrics: true,

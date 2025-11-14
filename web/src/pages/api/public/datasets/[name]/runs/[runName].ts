@@ -4,18 +4,14 @@ import {
   GetDatasetRunV1Response,
   DeleteDatasetRunV1Query,
   DeleteDatasetRunV1Response,
-  transformDbDatasetRunItemToAPIDatasetRunItemPg,
   transformDbDatasetRunToAPIDatasetRun,
 } from "@/src/features/public-api/types/datasets";
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
 import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
 import { ApiError, LangfuseNotFoundError } from "@langfuse/shared";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
-import {
-  executeWithDatasetRunItemsStrategy,
-  DatasetRunItemsOperationType,
-  addToDeleteDatasetQueue,
-} from "@langfuse/shared/src/server";
+import { addToDeleteDatasetQueue } from "@langfuse/shared/src/server";
+import { generateDatasetRunItemsForPublicApi } from "@/src/features/public-api/server/dataset-run-items";
 
 export default withMiddlewares({
   GET: createAuthedProjectAPIRoute({
@@ -34,7 +30,6 @@ export default withMiddlewares({
           },
         },
         include: {
-          datasetRunItems: true,
           dataset: {
             select: {
               name: true,
@@ -48,19 +43,22 @@ export default withMiddlewares({
       if (!datasetRuns[0])
         throw new LangfuseNotFoundError("Dataset run not found");
 
-      const { dataset, datasetRunItems, ...run } = datasetRuns[0];
+      const { dataset, ...run } = datasetRuns[0];
+
+      const datasetRunItems = await generateDatasetRunItemsForPublicApi({
+        props: {
+          datasetId: run.datasetId,
+          runId: run.id,
+          projectId: auth.scope.projectId,
+        },
+      });
 
       return {
         ...transformDbDatasetRunToAPIDatasetRun({
           ...run,
           datasetName: dataset.name,
         }),
-        datasetRunItems: datasetRunItems
-          .map((item) => ({
-            ...item,
-            datasetRunName: run.name,
-          }))
-          .map(transformDbDatasetRunItemToAPIDatasetRunItemPg),
+        datasetRunItems,
       };
     },
   }),
@@ -112,19 +110,12 @@ export default withMiddlewares({
         before: datasetRun,
       });
 
-      await executeWithDatasetRunItemsStrategy({
-        input: query,
-        operationType: DatasetRunItemsOperationType.WRITE,
-        postgresExecution: async () => {},
-        clickhouseExecution: async () => {
-          // Trigger async delete of dataset run items
-          await addToDeleteDatasetQueue({
-            deletionType: "dataset-runs",
-            projectId: auth.scope.projectId,
-            datasetRunIds: [datasetRun.id],
-            datasetId: datasetRun.datasetId,
-          });
-        },
+      // Trigger async delete of dataset run items
+      await addToDeleteDatasetQueue({
+        deletionType: "dataset-runs",
+        projectId: auth.scope.projectId,
+        datasetRunIds: [datasetRun.id],
+        datasetId: datasetRun.datasetId,
       });
 
       return {

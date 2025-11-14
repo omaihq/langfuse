@@ -11,7 +11,6 @@ import { v4 } from "uuid";
 import {
   ActionExecutionStatus,
   JobConfigState,
-  JsonNested,
   PromptDomainSchema,
   WebhookActionConfigWithSecrets,
 } from "@langfuse/shared";
@@ -66,6 +65,17 @@ class WebhookTestServer {
           { error: "Internal Server Error" },
           { status: 500 },
         );
+      }),
+
+      // 201 Created response endpoint (GitLab use case)
+      http.post("https://webhook-201.example.com/*", async ({ request }) => {
+        this.receivedRequests.push({
+          url: request.url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers.entries()),
+          body: JSON.stringify(await request.json()),
+        });
+        return HttpResponse.json({ success: true }, { status: 201 });
       }),
 
       // Timeout endpoint
@@ -219,7 +229,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made
       const requests = webhookServer.getReceivedRequests();
@@ -341,15 +351,90 @@ describe("Webhook Integration Tests", () => {
         },
       };
 
-      await expect(executeWebhook(webhookInput)).rejects.toThrow(
-        "Webhook config has no secret key, failing webhook execution",
-      );
+      await expect(
+        executeWebhook(webhookInput, { skipValidation: true }),
+      ).rejects.toThrow("Action config is not a valid webhook configuration");
 
       const execution = await prisma.automationExecution.findUnique({
         where: { id: executionId },
       });
 
       expect(execution?.status).toBe(ActionExecutionStatus.PENDING);
+    });
+
+    it("should accept 201 status code as success (GitLab use case)", async () => {
+      // Get the full prompt for the payload
+      const fullPrompt = await prisma.prompt.findUnique({
+        where: { id: promptId },
+      });
+
+      const action = await prisma.action.findUnique({
+        where: { id: actionId },
+      });
+
+      if (!action) {
+        throw new Error("Action not found");
+      }
+
+      // Update action to use 201 endpoint
+      await prisma.action.update({
+        where: { id: actionId },
+        data: {
+          projectId,
+          type: "WEBHOOK",
+          config: {
+            ...(action.config as WebhookActionConfigWithSecrets),
+            url: "https://webhook-201.example.com/test",
+          },
+        },
+      });
+
+      await prisma.automationExecution.create({
+        data: {
+          id: executionId,
+          projectId,
+          triggerId,
+          automationId,
+          actionId,
+          status: ActionExecutionStatus.PENDING,
+          sourceId: v4(),
+          input: {
+            promptName: "test-prompt",
+            promptVersion: 1,
+            action: "created",
+            type: "prompt-version",
+          },
+        },
+      });
+
+      const webhookInput: WebhookInput = {
+        projectId,
+        automationId,
+        executionId,
+        payload: {
+          prompt: PromptDomainSchema.parse(fullPrompt),
+          action: "created",
+          type: "prompt-version",
+        },
+      };
+
+      await executeWebhook(webhookInput, { skipValidation: true });
+
+      // Verify webhook request was made
+      const requests = webhookServer.getReceivedRequests();
+      expect(requests).toHaveLength(1);
+
+      const request = requests[0];
+      expect(request.url).toBe("https://webhook-201.example.com/test");
+      expect(request.method).toBe("POST");
+
+      // Verify execution was marked as completed (not error)
+      const execution = await prisma.automationExecution.findUnique({
+        where: { id: executionId },
+      });
+      expect(execution?.status).toBe(ActionExecutionStatus.COMPLETED);
+      expect(execution?.startedAt).toBeDefined();
+      expect(execution?.finishedAt).toBeDefined();
     });
 
     it("should handle webhook endpoint returning error", async () => {
@@ -406,7 +491,7 @@ describe("Webhook Integration Tests", () => {
         },
       };
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify execution was marked as error
       const execution = await prisma.automationExecution.findUnique({
@@ -414,7 +499,7 @@ describe("Webhook Integration Tests", () => {
       });
       expect(execution?.status).toBe(ActionExecutionStatus.ERROR);
       expect(execution?.error).toContain(
-        `Webhook does not return 200: failed with status 500 for url https://webhook-error.example.com/test and project ${projectId}`,
+        `Webhook does not return 2xx status: failed with status 500 for url https://webhook-error.example.com/test and project ${projectId}`,
       );
       expect(execution?.output).toMatchObject({
         httpStatus: 500,
@@ -480,7 +565,7 @@ describe("Webhook Integration Tests", () => {
           },
         };
 
-        await executeWebhook(webhookInput);
+        await executeWebhook(webhookInput, { skipValidation: true });
 
         // Verify execution was marked as error
         const execution = await prisma.automationExecution.findUnique({
@@ -489,7 +574,7 @@ describe("Webhook Integration Tests", () => {
 
         expect(execution?.status).toBe(ActionExecutionStatus.ERROR);
         expect(execution?.error).toContain(
-          `Webhook does not return 200: failed with status 500 for url https://webhook-error.example.com/test and project ${projectId}`,
+          `Webhook does not return 2xx status: failed with status 500 for url https://webhook-error.example.com/test and project ${projectId}`,
         );
       }
 
@@ -573,7 +658,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made with decrypted secret headers
       const requests = webhookServer.getReceivedRequests();
@@ -664,7 +749,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made with decrypted secret headers
       const requests = webhookServer.getReceivedRequests();
@@ -743,7 +828,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made with public headers
       const requests = webhookServer.getReceivedRequests();
@@ -827,7 +912,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made with public headers
       const requests = webhookServer.getReceivedRequests();
@@ -910,7 +995,7 @@ describe("Webhook Integration Tests", () => {
         },
       });
 
-      await executeWebhook(webhookInput);
+      await executeWebhook(webhookInput, { skipValidation: true });
 
       // Verify webhook request was made with valid headers only
       const requests = webhookServer.getReceivedRequests();
@@ -952,7 +1037,9 @@ describe("Webhook Integration Tests", () => {
       };
 
       // Should not throw an error, but return gracefully
-      await expect(executeWebhook(webhookInput)).resolves.toBeUndefined();
+      await expect(
+        executeWebhook(webhookInput, { skipValidation: true }),
+      ).resolves.toBeUndefined();
 
       // Verify that no execution record was created since automation doesn't exist
       const execution = await prisma.automationExecution.findUnique({
@@ -1080,7 +1167,7 @@ describe("Webhook Integration Tests", () => {
             },
           };
 
-          await executeWebhook(webhookInput);
+          await executeWebhook(webhookInput, { skipValidation: true });
         }
 
         // Verify trigger was disabled and lastFailingExecutionId was stored
@@ -1136,7 +1223,7 @@ describe("Webhook Integration Tests", () => {
             },
           };
 
-          await executeWebhook(newWebhookInput);
+          await executeWebhook(newWebhookInput, { skipValidation: true });
         }
 
         // Verify trigger was disabled again and lastFailingExecutionId was updated

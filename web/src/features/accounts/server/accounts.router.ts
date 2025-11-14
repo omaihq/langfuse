@@ -236,26 +236,59 @@ export const accountsRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const supabase = createSupabaseAdminClient();
 
-      // Generate synthetic username
+      // Generate synthetic username and convert to email identifier
       const syntheticUsername = generateSyntheticUsername({
         name: input.username,
       });
+      const email = `${syntheticUsername}@omaihq.com`.toLowerCase();
 
-      // Use hardcoded password for synthetic users
+      // Create Supabase Auth user (similar to real users), using the hardcoded password
+      const supabaseAuth = createSupabaseAdminClient();
+      const { data: authData, error: authError } =
+        await supabaseAuth.auth.signUp({
+          email,
+          password: HARDCODED_USER_PASSWORD,
+          options: {
+            data: {
+              name: input.username,
+              full_name: input.username,
+              email_verified: true,
+              phone_verified: false,
+            },
+          },
+        });
+
+      if (authError) {
+        console.error("Supabase Auth signup error:", authError);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Auth error: ${authError.message}`,
+        });
+      }
+
+      if (!authData.user) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to create auth user",
+        });
+      }
+
+      // Use hardcoded password for synthetic users (store hashed in test_users)
       const hashedPassword = hashChainlitPassword(HARDCODED_USER_PASSWORD);
 
-      // Create test user in test_users table
+      // Create test user in test_users table with email identifier
       const testUserRes = await supabase
         .schema("public")
         .from("test_users")
         .insert({
-          username: syntheticUsername,
+          username: email,
           password: hashedPassword,
         })
         .select("id")
         .single();
 
       if (testUserRes.error) {
+        console.error("test_users insert error:", testUserRes.error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: testUserRes.error.message,
@@ -265,12 +298,12 @@ export const accountsRouter = createTRPCRouter({
       // Create prompt for the synthetic user
       const promptName = createSyntheticPromptName(input.username);
 
-      // Create user in User table with synthetic metadata
+      // Create user in User table with synthetic metadata and email identifier
       const userRes = await supabase
         .schema("public")
         .from("User")
         .insert({
-          identifier: syntheticUsername,
+          identifier: email,
           metadata: {
             role: "synthetic",
             provider: "credentials",
@@ -286,6 +319,7 @@ export const accountsRouter = createTRPCRouter({
         .single();
 
       if (userRes.error) {
+        console.error("User table insert error:", userRes.error);
         // Clean up test user if User creation fails
         await supabase
           .schema("public")
@@ -315,7 +349,7 @@ export const accountsRouter = createTRPCRouter({
         console.log("created prompt", prompt);
 
         return {
-          username: syntheticUsername,
+          username: email,
           promptName: promptName,
           promptId: prompt.id,
           metadata: {

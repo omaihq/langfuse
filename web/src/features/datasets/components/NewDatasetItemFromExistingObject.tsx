@@ -17,13 +17,13 @@ import {
 } from "@/src/components/ui/dropdown-menu";
 import Link from "next/link";
 import { NewDatasetItemForm } from "@/src/features/datasets/components/NewDatasetItemForm";
-import { type Prisma } from "@langfuse/shared/src/db";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { Button } from "@/src/components/ui/button";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { useIsAuthenticatedAndProjectMember } from "@/src/features/auth/hooks";
 import { parseJsonPrioritised } from "@langfuse/shared";
 import { ActionButton } from "@/src/components/ActionButton";
+import { type MetadataDomainClient } from "@/src/utils/clientSideDomainTypes";
 
 /**
  * Component for creating a new dataset item from an existing object.
@@ -41,8 +41,9 @@ export const NewDatasetItemFromExistingObject = (props: {
   fromDatasetId?: string;
   input: string | null;
   output: string | null;
-  metadata: Prisma.JsonValue;
+  metadata: MetadataDomainClient;
   isCopyItem?: boolean;
+  buttonVariant?: "outline" | "secondary";
 }) => {
   const parsedInput =
     props.input && typeof props.input === "string"
@@ -74,6 +75,7 @@ export const NewDatasetItemFromExistingObject = (props: {
     scope: "datasets:CUD",
   });
   const capture = usePostHogClientCapture();
+  const buttonVariant = props.buttonVariant || "secondary";
 
   return (
     <>
@@ -137,7 +139,7 @@ export const NewDatasetItemFromExistingObject = (props: {
               object: props.observationId ? "observation" : "trace",
             });
           }}
-          variant="secondary"
+          variant={buttonVariant}
           disabled={!hasAccess}
         >
           {hasAccess ? (
@@ -155,7 +157,7 @@ export const NewDatasetItemFromExistingObject = (props: {
       <Dialog open={hasAccess && isFormOpen} onOpenChange={setIsFormOpen}>
         <DialogContent className="h-[calc(100vh-5rem)] max-h-none w-[calc(100vw-5rem)] max-w-none">
           <DialogHeader>
-            <DialogTitle>Add to datasets</DialogTitle>
+            <DialogTitle>Add item to datasets</DialogTitle>
           </DialogHeader>
           {isFormOpen && (
             <NewDatasetItemForm
@@ -167,9 +169,7 @@ export const NewDatasetItemFromExistingObject = (props: {
               metadata={props.metadata}
               onFormSuccess={() => setIsFormOpen(false)}
               className="h-full overflow-y-auto"
-              blockedDatasetIds={
-                props.fromDatasetId ? [props.fromDatasetId] : undefined
-              }
+              currentDatasetId={props.fromDatasetId}
             />
           )}
         </DialogContent>

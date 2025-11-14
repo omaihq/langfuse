@@ -20,6 +20,7 @@ import { CodeView, JSONView } from "@/src/components/ui/CodeJsonViewer";
 import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
 import useProjectIdFromURL from "@/src/hooks/useProjectIdFromURL";
 import { api } from "@/src/utils/api";
+import { getNumberFromMap } from "@/src/utils/map-utils";
 import {
   extractVariables,
   PRODUCTION_LABEL,
@@ -58,7 +59,7 @@ import { TagPromptDetailsPopover } from "@/src/features/tag/components/TagPrompt
 import { SetPromptVersionLabels } from "@/src/features/prompts/components/SetPromptVersionLabels";
 import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton";
 import { Command, CommandInput } from "@/src/components/ui/command";
-import { renderContentWithPromptButtons } from "@/src/features/prompts/components/renderContentWithPromptButtons";
+import { renderRichPromptContent } from "@/src/features/prompts/components/prompt-content-utils";
 import { PromptVariableListPreview } from "@/src/features/prompts/components/PromptVariableListPreview";
 
 const getPythonCode = (
@@ -85,20 +86,20 @@ const getJsCode = (
   name: string,
   version: number,
   labels: string[],
-) => `import { Langfuse } from "langfuse";
+) => `import { LangfuseClient } from "@langfuse/client";
 
 // Initialize the Langfuse client
-const langfuse = new Langfuse();
+const langfuse = new LangfuseClient();
 
 // Get production prompt
-const prompt = await langfuse.getPrompt("${name}");
+const prompt = await langfuse.prompt.get("${name}");
 
 // Get by label
 // You can use as many labels as you'd like to identify different deployment targets
-${labels.length > 0 ? labels.map((label) => `const prompt = await langfuse.getPrompt("${name}", undefined, { label: "${label}" })`).join("\n") : ""}
+${labels.length > 0 ? labels.map((label) => `const prompt = await langfuse.prompt.get("${name}", { label: "${label}" })`).join("\n") : ""}
 
 // Get by version number, usually not recommended as it requires code changes to deploy new prompt versions
-langfuse.getPrompt("${name}", ${version})
+await langfuse.prompt.get("${name}", { version: ${version} })
 `;
 
 export const PromptDetail = ({
@@ -196,7 +197,7 @@ export const PromptDetail = ({
     void utils.datasets.baseRunDataByDatasetId.invalidate();
     void utils.datasets.runsByDatasetId.invalidate();
     showSuccessToast({
-      title: "Experiment run triggered successfully",
+      title: "Experiment triggered successfully",
       description: "Waiting for experiment to complete...",
       link: {
         text: "View experiment",
@@ -225,14 +226,19 @@ export const PromptDetail = ({
     ).data?.tags ?? []
   ).map((t) => t.value);
 
-  const commentCounts = api.comments.getCountByObjectId.useQuery(
+  const promptIds = useMemo(
+    () => promptHistory.data?.promptVersions.map((p) => p.id) ?? [],
+    [promptHistory.data?.promptVersions],
+  );
+
+  const commentCounts = api.comments.getCountByObjectIds.useQuery(
     {
       projectId: projectId as string,
-      objectId: prompt?.id as string,
       objectType: "PROMPT",
+      objectIds: promptIds,
     },
     {
-      enabled: Boolean(projectId) && Boolean(prompt?.id),
+      enabled: Boolean(projectId) && promptIds.length > 0,
       trpc: {
         context: {
           skipBatch: true,
@@ -273,6 +279,8 @@ export const PromptDetail = ({
     <Page
       headerProps={{
         title: prompt.name,
+        titleTooltip:
+          "Prompt names cannot be changed. Instead, duplicate this prompt to a different name.",
         itemType: "PROMPT",
         help: {
           description:
@@ -332,14 +340,14 @@ export const PromptDetail = ({
               onClick={() => {
                 capture("prompts:update_form_open");
               }}
-              className="h-6 w-6 shrink-0 px-1 md:h-8 md:w-fit md:px-3"
+              className="h-6 w-6 shrink-0 px-1 lg:h-8 lg:w-fit lg:px-3"
             >
               <Link
                 className="grid w-full place-items-center md:grid-flow-col"
                 href={`/project/${projectId}/prompts/new?promptId=${encodeURIComponent(prompt.id)}`}
               >
                 <Plus className="h-4 w-4 md:mr-2" />
-                <span className="hidden md:inline">New</span>
+                <span className="hidden lg:inline">New version</span>
               </Link>
             </Button>
           </div>
@@ -352,6 +360,7 @@ export const PromptDetail = ({
                 setCurrentPromptLabel(null);
               }}
               totalCount={promptHistory.data.totalCount}
+              commentCounts={commentCounts.data}
             />
           </div>
         </Command>
@@ -409,11 +418,11 @@ export const PromptDetail = ({
                       >
                         <FlaskConical className="h-4 w-4" />
                         <span className="hidden md:ml-2 md:inline">
-                          Experiment
+                          Run experiment
                         </span>
                       </Button>
                     </DialogTrigger>
-                    <DialogContent className="max-h-[90vh] overflow-y-auto">
+                    <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
                       <CreateExperimentsForm
                         key={`create-experiment-form-${prompt.id}`}
                         projectId={projectId as string}
@@ -434,7 +443,7 @@ export const PromptDetail = ({
                   projectId={projectId as string}
                   objectId={prompt.id}
                   objectType="PROMPT"
-                  count={commentCounts?.data?.get(prompt.id)}
+                  count={getNumberFromMap(commentCounts?.data, prompt.id)}
                   variant="outline"
                 />
                 <DropdownMenu>
@@ -532,10 +541,11 @@ export const PromptDetail = ({
                     />
                   ) : (
                     <CodeView
-                      content={renderContentWithPromptButtons(
+                      content={renderRichPromptContent(
                         projectId as string,
                         prompt.prompt,
                       )}
+                      originalContent={prompt.prompt}
                       title="Text Prompt"
                     />
                   )

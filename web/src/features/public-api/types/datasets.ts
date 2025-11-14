@@ -6,10 +6,11 @@ import {
   queryStringZod,
   type DatasetRuns as DbDatasetRuns,
   type DatasetItem as DbDatasetItems,
-  type DatasetRunItems as DbDatasetRunItems,
   type Dataset as DbDataset,
   removeObjectKeys,
+  type DatasetRunItemDomain,
 } from "@langfuse/shared";
+import { DatasetJSONSchema } from "@langfuse/shared/src/server";
 import { z } from "zod/v4";
 
 /**
@@ -23,6 +24,8 @@ const APIDataset = z
     name: z.string(),
     description: z.string().nullable(),
     metadata: z.any(),
+    inputSchema: z.any().nullable(),
+    expectedOutputSchema: z.any().nullable(),
     createdAt: z.coerce.date(),
     updatedAt: z.coerce.date(),
   })
@@ -86,10 +89,20 @@ export const transformDbDatasetItemToAPIDatasetItem = (
 ): z.infer<typeof APIDatasetItem> =>
   removeObjectKeys(dbDatasetItem, ["projectId"]);
 
-export const transformDbDatasetRunItemToAPIDatasetRunItemPg = (
-  dbDatasetRunItem: DbDatasetRunItems & { datasetRunName: string },
+export const transformDbDatasetRunItemToAPIDatasetRunItemCh = (
+  dbDatasetRunItem: DatasetRunItemDomain,
 ): z.infer<typeof APIDatasetRunItem> =>
-  removeObjectKeys(dbDatasetRunItem, ["projectId"]);
+  removeObjectKeys(dbDatasetRunItem, [
+    "projectId",
+    "datasetRunDescription",
+    "datasetRunMetadata",
+    "datasetRunCreatedAt",
+    "datasetItemInput",
+    "datasetItemExpectedOutput",
+    "datasetItemMetadata",
+    "datasetId",
+    "error",
+  ]);
 
 export const transformDbDatasetToAPIDataset = (
   dataset: DbDataset,
@@ -105,6 +118,8 @@ export const PostDatasetsV2Body = z.object({
   name: z.string(),
   description: z.string().nullish(),
   metadata: jsonSchema.nullish(),
+  inputSchema: DatasetJSONSchema.nullish(),
+  expectedOutputSchema: DatasetJSONSchema.nullish(),
 });
 export const PostDatasetsV2Response = APIDataset.strict();
 
@@ -228,6 +243,8 @@ export const PostDatasetsV1Body = z.object({
   name: z.string(),
   description: z.string().nullish(),
   metadata: jsonSchema.nullish(),
+  inputSchema: DatasetJSONSchema.nullish(),
+  expectedOutputSchema: DatasetJSONSchema.nullish(),
 });
 export const PostDatasetsV1Response = APIDataset.extend({
   items: z.array(APIDatasetItem),

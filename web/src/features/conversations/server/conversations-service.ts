@@ -3,7 +3,7 @@ import {
   orderByToClickhouseSql,
   queryClickhouse,
 } from "@langfuse/shared/src/server";
-import { sessionCols } from "../../../../../packages/shared/src/tableDefinitions/mapSessionTable";
+import { sessionCols } from "../../../../../packages/shared/src/server/tableMappings/mapSessionTable";
 
 export type SimplifiedSessionData = {
   session_id: string;

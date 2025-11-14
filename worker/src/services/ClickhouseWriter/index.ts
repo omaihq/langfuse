@@ -4,19 +4,20 @@ import {
   BlobStorageFileLogInsertType,
   getCurrentSpan,
   ObservationRecordInsertType,
+  ObservationBatchStagingRecordInsertType,
   recordGauge,
   recordHistogram,
   recordIncrement,
   ScoreRecordInsertType,
   TraceRecordInsertType,
-  TraceMtRecordInsertType,
+  TraceNullRecordInsertType,
   DatasetRunItemRecordInsertType,
+  EventRecordInsertType,
 } from "@langfuse/shared/src/server";
 
 import { env } from "../../env";
 import { logger } from "@langfuse/shared/src/server";
 import { instrumentAsync } from "@langfuse/shared/src/server";
-import { SpanKind } from "@opentelemetry/api";
 import { backOff } from "exponential-backoff";
 
 export class ClickhouseWriter {
@@ -39,11 +40,13 @@ export class ClickhouseWriter {
 
     this.queue = {
       [TableName.Traces]: [],
-      [TableName.TracesMt]: [],
+      [TableName.TracesNull]: [],
       [TableName.Scores]: [],
       [TableName.Observations]: [],
+      [TableName.ObservationsBatchStaging]: [],
       [TableName.BlobStorageFileLog]: [],
       [TableName.DatasetRunItems]: [],
+      [TableName.Events]: [],
     };
 
     this.start();
@@ -100,17 +103,18 @@ export class ClickhouseWriter {
     return instrumentAsync(
       {
         name: "write-to-clickhouse",
-        spanKind: SpanKind.CONSUMER,
       },
       async () => {
         recordIncrement("langfuse.queue.clickhouse_writer.request");
         await Promise.all([
           this.flush(TableName.Traces, fullQueue),
-          this.flush(TableName.TracesMt, fullQueue),
+          this.flush(TableName.TracesNull, fullQueue),
           this.flush(TableName.Scores, fullQueue),
           this.flush(TableName.Observations, fullQueue),
+          this.flush(TableName.ObservationsBatchStaging, fullQueue),
           this.flush(TableName.BlobStorageFileLog, fullQueue),
           this.flush(TableName.DatasetRunItems, fullQueue),
+          this.flush(TableName.Events, fullQueue),
         ]).catch((err) => {
           logger.error("ClickhouseWriter.flushAll", err);
         });
@@ -132,12 +136,64 @@ export class ClickhouseWriter {
 
     const errorMessage = (error as Error).message?.toLowerCase() || "";
 
-    // Check for ClickHouse size errors
     return (
+      // Check for ClickHouse size errors
       errorMessage.includes("size of json object") &&
       errorMessage.includes("extremely large") &&
       errorMessage.includes("expected not greater than")
     );
+  }
+
+  private isStringLengthError(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+
+    const errorMessage = (error as Error).message?.toLowerCase() || "";
+
+    // Node.js string size errors
+    return errorMessage.includes("invalid string length");
+  }
+
+  /**
+   * handleStringLength takes the queueItems and splits the queue in half.
+   * It returns to lists, one items that are to be retried (first half), and a list that
+   * should be re-added to the queue (second half).
+   * That way, we should eventually avoid the JS string length error that happens due to the
+   * concatenation.
+   */
+  private handleStringLengthError<T extends TableName>(
+    tableName: T,
+    queueItems: ClickhouseWriterQueueItem<T>[],
+  ): {
+    retryItems: ClickhouseWriterQueueItem<T>[];
+    requeueItems: ClickhouseWriterQueueItem<T>[];
+  } {
+    // If batch size is 1, fallback to truncation to prevent infinite loops
+    if (queueItems.length === 1) {
+      const truncatedRecord = this.truncateOversizedRecord(
+        tableName,
+        queueItems[0].data,
+      );
+      logger.warn(
+        `String length error with single record for ${tableName}, falling back to truncation`,
+        {
+          recordId: queueItems[0].data.id,
+        },
+      );
+      return {
+        retryItems: [{ ...queueItems[0], data: truncatedRecord }],
+        requeueItems: [],
+      };
+    }
+
+    const splitPoint = Math.floor(queueItems.length / 2);
+    const retryItems = queueItems.slice(0, splitPoint);
+    const requeueItems = queueItems.slice(splitPoint);
+
+    logger.info(
+      `Splitting batch for ${tableName} due to string length error. Retrying ${retryItems.length}, requeueing ${requeueItems.length}`,
+    );
+
+    return { retryItems, requeueItems };
   }
 
   private truncateOversizedRecord<T extends TableName>(
@@ -194,7 +250,7 @@ export class ClickhouseWriter {
       const metadata = record.metadata;
       const truncatedMetadata: Record<string, string> = {};
       for (const [key, value] of Object.entries(metadata)) {
-        if (value.length > maxFieldSize) {
+        if (value && value.length > maxFieldSize) {
           truncatedMetadata[key] = truncateField(value) || "";
           logger.info(
             `Truncated oversized metadata for record ${record.id} of type ${tableName} and key ${key}`,
@@ -216,7 +272,7 @@ export class ClickhouseWriter {
     const entityQueue = this.queue[tableName];
     if (entityQueue.length === 0) return;
 
-    const queueItems = entityQueue.splice(
+    let queueItems = entityQueue.splice(
       0,
       fullQueue ? entityQueue.length : this.batchSize,
     );
@@ -253,6 +309,7 @@ export class ClickhouseWriter {
           retry: (error: Error, attemptNumber: number) => {
             const isRetryable = this.isRetryableError(error);
             const isSizeError = this.isSizeError(error);
+            const isStringLengthError = this.isStringLengthError(error);
 
             if (isRetryable) {
               logger.warn(
@@ -265,6 +322,37 @@ export class ClickhouseWriter {
               currentSpan?.addEvent("clickhouse-query-retry", {
                 "retry.attempt": attemptNumber,
                 "retry.error": error.message,
+              });
+              return true;
+            } else if (isStringLengthError) {
+              logger.warn(
+                `ClickHouse Writer failed with string length error for ${tableName} (attempt ${attemptNumber}/${env.LANGFUSE_INGESTION_CLICKHOUSE_MAX_ATTEMPTS}): Splitting batch and retrying`,
+                {
+                  error: error.message,
+                  attemptNumber,
+                  batchSize: queueItems.length,
+                },
+              );
+
+              const { retryItems, requeueItems } = this.handleStringLengthError(
+                tableName,
+                queueItems,
+              );
+
+              // Update records to write with only the retry items
+              recordsToWrite = retryItems.map((item) => item.data);
+              queueItems = retryItems;
+
+              // Prepend requeue items to the front of the queue to maintain order as much as possible with parallel execution.
+              if (requeueItems.length > 0) {
+                entityQueue.unshift(...requeueItems);
+              }
+
+              currentSpan?.addEvent("clickhouse-query-split-retry", {
+                "retry.attempt": attemptNumber,
+                "retry.error": error.message,
+                "split.retry_count": retryItems.length,
+                "split.requeue_count": requeueItems.length,
               });
               return true;
             } else if (isSizeError && !hasBeenTruncated) {
@@ -340,7 +428,7 @@ export class ClickhouseWriter {
           recordIncrement("langfuse.queue.clickhouse_writer.error");
           logger.error(
             `Max attempts reached for ${tableName} record. Dropping record.`,
-            { item: item.data },
+            { item: this.truncateOversizedRecord(tableName, item.data) },
           );
         }
       });
@@ -379,7 +467,15 @@ export class ClickhouseWriter {
         format: "JSONEachRow",
         values: params.records,
         clickhouse_settings: {
-          log_comment: JSON.stringify({ feature: "ingestion" }),
+          log_comment: JSON.stringify({
+            feature: "ingestion",
+            type: params.table,
+            operation_name: "writeToClickhouse",
+            projectId:
+              params.records.length > 0
+                ? params.records[0].project_id
+                : undefined,
+          }),
         },
       })
       .catch((err) => {
@@ -398,26 +494,32 @@ export class ClickhouseWriter {
 
 export enum TableName {
   Traces = "traces", // eslint-disable-line no-unused-vars
-  TracesMt = "traces_mt", // eslint-disable-line no-unused-vars
+  TracesNull = "traces_null", // eslint-disable-line no-unused-vars
   Scores = "scores", // eslint-disable-line no-unused-vars
   Observations = "observations", // eslint-disable-line no-unused-vars
+  ObservationsBatchStaging = "observations_batch_staging", // eslint-disable-line no-unused-vars
   BlobStorageFileLog = "blob_storage_file_log", // eslint-disable-line no-unused-vars
-  DatasetRunItems = "dataset_run_items", // eslint-disable-line no-unused-vars
+  DatasetRunItems = "dataset_run_items_rmt", // eslint-disable-line no-unused-vars
+  Events = "events", // eslint-disable-line no-unused-vars
 }
 
 type RecordInsertType<T extends TableName> = T extends TableName.Scores
   ? ScoreRecordInsertType
   : T extends TableName.Observations
     ? ObservationRecordInsertType
-    : T extends TableName.Traces
-      ? TraceRecordInsertType
-      : T extends TableName.TracesMt
-        ? TraceMtRecordInsertType
-        : T extends TableName.BlobStorageFileLog
-          ? BlobStorageFileLogInsertType
-          : T extends TableName.DatasetRunItems
-            ? DatasetRunItemRecordInsertType
-            : never;
+    : T extends TableName.ObservationsBatchStaging
+      ? ObservationBatchStagingRecordInsertType
+      : T extends TableName.Traces
+        ? TraceRecordInsertType
+        : T extends TableName.TracesNull
+          ? TraceNullRecordInsertType
+          : T extends TableName.BlobStorageFileLog
+            ? BlobStorageFileLogInsertType
+            : T extends TableName.DatasetRunItems
+              ? DatasetRunItemRecordInsertType
+              : T extends TableName.Events
+                ? EventRecordInsertType
+                : never;
 
 type ClickhouseQueue = {
   [T in TableName]: ClickhouseWriterQueueItem<T>[];
