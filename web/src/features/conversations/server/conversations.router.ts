@@ -22,6 +22,7 @@ export const conversationsRouter = createTRPCRouter({
       try {
         const sessions = await getAllSessionsWithOptionalUserFilter({
           projectId: input.projectId,
+          accountId: input.accountId,
           orderBy: input.orderBy,
           page: input.page,
           limit: input.limit,

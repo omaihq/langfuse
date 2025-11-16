@@ -70,7 +70,7 @@ export function RecentConversations({
       <div className="mb-2 text-xs text-muted-foreground">
         Recent conversations for{" "}
         <Link
-          href={`/project/${projectId}/conversations?accountId=${userId}`}
+          href={`/project/${projectId}/conversations?accountId=${encodeURIComponent(userId)}`}
           className="text-blue-600 hover:text-blue-800 hover:underline"
         >
           {userId}
