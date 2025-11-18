@@ -13,9 +13,9 @@ import bundleAnalyzer from "@next/bundle-analyzer";
  */
 const cspHeader = `
   default-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.posthog.com https://*.sentry.io;
-  script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.langfuse.com https://*.langfuse.dev https://challenges.cloudflare.com https://*.sentry.io  https://static.cloudflareinsights.com https://*.stripe.com https://uptime.betterstack.com https://chat.cdn-plain.com;
+  script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.langfuse.com https://*.langfuse.dev https://challenges.cloudflare.com https://*.sentry.io  https://static.cloudflareinsights.com https://*.stripe.com https://uptime.betterstack.com;
   style-src 'self' 'unsafe-inline' https://uptime.betterstack.com https://fonts.googleapis.com;
-  img-src 'self' https: blob: data: http://localhost:*;
+  img-src 'self' https: blob: data: http://localhost:* https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com https://i0.wp.com;
   font-src 'self';
   frame-src 'self' https://challenges.cloudflare.com https://*.stripe.com;
   worker-src 'self' blob:;
@@ -23,7 +23,7 @@ const cspHeader = `
   base-uri 'self';
   form-action 'self';
   frame-ancestors 'none';
-  connect-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.ingest.us.sentry.io https://*.sentry.io https://uptime.betterstack.com https://chat.uk.plain.com https://*.s3.amazonaws.com;
+  connect-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.ingest.us.sentry.io https://*.sentry.io https://uptime.betterstack.com https://chat.uk.plain.com https://*.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com;
   media-src 'self' https: http://localhost:*;
   ${env.LANGFUSE_CSP_ENFORCE_HTTPS === "true" ? "upgrade-insecure-requests; block-all-mixed-content;" : ""}
   ${env.SENTRY_CSP_REPORT_URI ? `report-uri ${env.SENTRY_CSP_REPORT_URI}; report-to csp-endpoint;` : ""}
@@ -57,20 +57,34 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  experimental: {
-    instrumentationHook: true,
-    serverComponentsExternalPackages: [
-      "dd-trace",
-      "@opentelemetry/api",
-      "@appsignal/opentelemetry-instrumentation-bullmq",
-      "bullmq",
-      "@opentelemetry/sdk-node",
-      "@opentelemetry/instrumentation-winston",
-      "kysely",
-    ],
-  },
+  serverExternalPackages: [
+    "dd-trace",
+    "@opentelemetry/api",
+    "@appsignal/opentelemetry-instrumentation-bullmq",
+    "bullmq",
+    "@opentelemetry/sdk-node",
+    "@opentelemetry/instrumentation-winston",
+    "kysely",
+  ],
   poweredByHeader: false,
   basePath: env.NEXT_PUBLIC_BASE_PATH,
+  turbopack: {
+    resolveAlias: {
+      "@langfuse/shared": "./packages/shared/src",
+      // this is an ugly hack to get turbopack to work with react-resizable, used in the
+      // web/src/features/widgets/components/DashboardGrid.tsx file. This **only** affects
+      // the dev server. The CSS is included in the non-turbopack based prod build anyways.
+      // Also not needed for the non-turbopack based dev server.
+      "react-resizable/css/styles.css":
+        "../node_modules/.pnpm/react-resizable@3.0.5_react-dom@19.2.0_react@19.2.0__react@19.2.0/node_modules/react-resizable/css/styles.css",
+    },
+  },
+  experimental: {
+    browserDebugInfoInTerminal: true, // Logs browser logs to terminal
+    // TODO: enable with new next version! 15.6
+    // see: https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopackPersistentCaching
+    // turbopackPersistentCaching: true,
+  },
 
   /**
    * If you have `experimental: { appDir: true }` set, then you must comment the below `i18n` config
@@ -184,16 +198,10 @@ const nextConfig = {
     ];
   },
 
-  // webassembly support for @dqbd/tiktoken
   webpack(config, { isServer }) {
-    config.experiments = {
-      asyncWebAssembly: true,
-      layers: true,
-    };
-
     // Exclude Datadog packages from webpack bundling to avoid issues
+    // see: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/nodejs/#bundling-with-nextjs
     config.externals.push("@datadog/pprof", "dd-trace");
-
     return config;
   },
 };
@@ -228,7 +236,9 @@ const sentryConfig = withSentryConfig(nextConfig, {
   // tunnelRoute: "/api/monitoring-tunnel",
 
   // Hides source maps from generated client bundles
-  hideSourceMaps: true,
+  sourcemaps: {
+    disable: true,
+  },
 
   // Automatically tree-shake Sentry logger statements to reduce bundle size
   disableLogger: true,
@@ -243,7 +253,7 @@ const sentryConfig = withSentryConfig(nextConfig, {
 // Enable bundle analyzer in analyze mode, otherwise use standard config
 const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === "true",
-  openAnalyzer: false, // Open analyzer in browser
+  openAnalyzer: true, // Open analyzer in browser
 });
 
 export default withBundleAnalyzer(sentryConfig);

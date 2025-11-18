@@ -93,6 +93,20 @@ export const traceView: ViewDeclarationType = {
       description: "Unique scores attached to the trace.",
       unit: "scores",
     },
+    uniqueUserIds: {
+      sql: "uniq(traces.user_id)",
+      alias: "uniqueUserIds",
+      type: "integer",
+      description: "Count of unique userIds.",
+      unit: "users",
+    },
+    uniqueSessionIds: {
+      sql: "uniq(traces.session_id)",
+      alias: "uniqueSessionIds",
+      type: "integer",
+      description: "Count of unique sessionIds.",
+      unit: "sessions",
+    },
     latency: {
       sql: "date_diff('millisecond', min(observations.start_time), max(observations.end_time))",
       alias: "latency",
@@ -458,7 +472,7 @@ const scoreBaseDimensions: DimensionsDeclarationType = {
 export const scoresNumericView: ViewDeclarationType = {
   name: "scores_numeric",
   description:
-    "Scores are flexible objects that are used for evaluations. This view contains numeric scores.",
+    "Scores are flexible objects that are used for evaluations. This view contains numeric and boolean scores.",
   dimensions: {
     ...scoreBaseDimensions,
     id: {
@@ -509,6 +523,12 @@ export const scoresNumericView: ViewDeclarationType = {
       alias: "timestampMonth",
       type: "string",
       description: "Month of the score timestamp in YYYY-MM format.",
+    },
+    timestampDay: {
+      sql: "formatDateTime(scores_numeric.timestamp, '%Y-%m-%d')",
+      alias: "timestampDay",
+      type: "string",
+      description: "Day of the score timestamp in YYYY-MM-DD format.",
     },
     observationId: {
       sql: "scores_numeric.observation_id",
@@ -619,6 +639,12 @@ export const scoresCategoricalView: ViewDeclarationType = {
       alias: "timestampMonth",
       type: "string",
       description: "Month of the score timestamp in YYYY-MM format.",
+    },
+    timestampDay: {
+      sql: "formatDateTime(scores_categorical.timestamp, '%Y-%m-%d')",
+      alias: "timestampDay",
+      type: "string",
+      description: "Day of the score timestamp in YYYY-MM-DD format.",
     },
     observationId: {
       sql: "scores_categorical.observation_id",

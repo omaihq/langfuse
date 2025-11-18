@@ -13,21 +13,22 @@ export default function Generations() {
   const router = useRouter();
   const projectId = router.query.projectId as string;
 
-  // Check if the user has any traces
-  const { data: hasAnyTrace, isLoading } = api.traces.hasAny.useQuery(
-    { projectId },
-    {
-      enabled: !!projectId,
-      trpc: {
-        context: {
-          skipBatch: true,
+  // Check if the user has tracing configured
+  const { data: hasTracingConfigured, isLoading } =
+    api.traces.hasTracingConfigured.useQuery(
+      { projectId },
+      {
+        enabled: !!projectId,
+        trpc: {
+          context: {
+            skipBatch: true,
+          },
         },
+        refetchInterval: 10_000,
       },
-      refetchInterval: 10_000,
-    },
-  );
+    );
 
-  const showOnboarding = !isLoading && !hasAnyTrace;
+  const showOnboarding = !isLoading && !hasTracingConfigured;
 
   return (
     <Page
@@ -36,7 +37,7 @@ export default function Generations() {
         help: {
           description:
             "An observation captures a single function call in an application. See docs to learn more.",
-          href: "https://langfuse.com/docs/tracing-data-model",
+          href: "https://langfuse.com/docs/observability/data-model",
         },
         tabsProps: {
           tabs: getTracingTabs(projectId),

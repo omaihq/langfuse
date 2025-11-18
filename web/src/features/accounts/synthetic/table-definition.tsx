@@ -69,7 +69,7 @@ export const syntheticTableColumns: LangfuseColumnDef<
       return (
         <Link
           className="flex items-center gap-1 whitespace-nowrap underline"
-          href={`/project/${row.original.projectId}/conversations?accountId=${row.original.username}`}
+          href={`/project/${row.original.projectId}/conversations?accountId=${encodeURIComponent(row.original.username)}`}
         >
           View conversations <ArrowUpRight size={12} />
         </Link>
@@ -130,7 +130,7 @@ function ManageSyntheticUserCell({
       setGenerateConversationDialogOpen(false);
       // Redirect to conversations page for this user
       router.push(
-        `/project/${row.original.projectId}/conversations?accountId=${row.original.username}`,
+        `/project/${row.original.projectId}/conversations?accountId=${encodeURIComponent(row.original.username)}`,
       );
     },
     onError: (error: any) => {

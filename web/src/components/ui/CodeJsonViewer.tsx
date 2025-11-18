@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/src/components/ui/button";
 import {
   Check,
@@ -19,10 +19,10 @@ import { useMarkdownContext } from "@/src/features/theming/useMarkdownContext";
 import { type MediaReturnType } from "@/src/features/media/validation";
 import { LangfuseMediaView } from "@/src/components/ui/LangfuseMediaView";
 import { MarkdownJsonViewHeader } from "@/src/components/ui/MarkdownJsonView";
-import { renderContentWithPromptButtons } from "@/src/features/prompts/components/renderContentWithPromptButtons";
+import { renderRichPromptContent } from "@/src/features/prompts/components/prompt-content-utils";
 import { copyTextToClipboard } from "@/src/utils/clipboard";
 
-const IO_TABLE_CHAR_LIMIT = 10000;
+export const IO_TABLE_CHAR_LIMIT = 10000;
 
 export function JSONView(props: {
   canEnableMarkdown?: boolean;
@@ -86,7 +86,7 @@ export function JSONView(props: {
     <>
       <div
         className={cn(
-          "flex gap-2 whitespace-pre-wrap break-words p-3 text-xs",
+          "io-message-content flex gap-2 whitespace-pre-wrap break-words p-2 text-xs",
           props.title === "assistant" || props.title === "Output"
             ? "bg-accent-light-green dark:border-accent-dark-green"
             : "",
@@ -101,7 +101,7 @@ export function JSONView(props: {
           <Skeleton className="h-3 w-3/4" />
         ) : props.projectIdForPromptButtons ? (
           <code className="whitespace-pre-wrap break-words">
-            {renderContentWithPromptButtons(
+            {renderRichPromptContent(
               props.projectIdForPromptButtons,
               String(parsedJson),
             )}
@@ -111,6 +111,7 @@ export function JSONView(props: {
             src={parsedJson}
             theme="github"
             dark={resolvedTheme === "dark"}
+            collapsed={isCollapsed ? 1 : false}
             collapseObjectsAfterLength={isCollapsed ? 0 : 20}
             collapseStringsAfterLength={collapseStringsAfterLength}
             collapseStringMode="word"
@@ -196,6 +197,7 @@ export function JSONView(props: {
 
 export function CodeView(props: {
   content: string | React.ReactNode[] | undefined | null;
+  originalContent?: string;
   className?: string;
   defaultCollapsed?: boolean;
   title?: string;
@@ -208,9 +210,10 @@ export function CodeView(props: {
     event.preventDefault();
     setIsCopied(true);
     const content =
-      typeof props.content === "string"
+      props.originalContent ??
+      (typeof props.content === "string"
         ? props.content
-        : (props.content?.join("\n") ?? "");
+        : (props.content?.join("\n") ?? ""));
     void copyTextToClipboard(content);
     setTimeout(() => setIsCopied(false), 1000);
 
@@ -292,71 +295,6 @@ export function CodeView(props: {
   );
 }
 
-export const IOTableCell = ({
-  data,
-  isLoading = false,
-  className,
-  singleLine = false,
-}: {
-  data: unknown;
-  isLoading?: boolean;
-  className?: string;
-  singleLine?: boolean;
-}) => {
-  if (isLoading) {
-    return <JsonSkeleton className="h-full w-full overflow-hidden px-2 py-1" />;
-  }
-
-  const stringifiedJson =
-    data !== null && data !== undefined ? stringifyJsonNode(data) : undefined;
-
-  // perf: truncate to IO_TABLE_CHAR_LIMIT characters as table becomes unresponsive attempting to render large JSONs with high levels of nesting
-  const shouldTruncate =
-    stringifiedJson && stringifiedJson.length > IO_TABLE_CHAR_LIMIT;
-
-  return (
-    <>
-      {singleLine ? (
-        <div
-          className={cn(
-            "ph-no-capture h-full w-full self-stretch overflow-hidden overflow-y-auto truncate rounded-sm border px-2 py-0.5",
-            className,
-          )}
-        >
-          {stringifiedJson}
-        </div>
-      ) : shouldTruncate ? (
-        <div className="ph-no-capture grid h-full grid-cols-1">
-          <JSONView
-            json={
-              stringifiedJson.slice(0, IO_TABLE_CHAR_LIMIT) +
-              `...[truncated ${stringifiedJson.length - IO_TABLE_CHAR_LIMIT} characters]`
-            }
-            className={cn("h-full w-full self-stretch rounded-sm", className)}
-            codeClassName="py-1 px-2 min-h-0 h-full overflow-y-auto"
-            collapseStringsAfterLength={null} // in table, show full strings as row height is fixed
-          />
-          <div className="text-xs text-muted-foreground">
-            Content was truncated.
-          </div>
-        </div>
-      ) : (
-        <JSONView
-          json={data}
-          className={cn(
-            "ph-no-capture h-full w-full self-stretch rounded-sm",
-            className,
-          )}
-          codeClassName="py-1 px-2 min-h-0 h-full overflow-y-auto"
-          collapseStringsAfterLength={null} // in table, show full strings as row height is fixed
-        />
-      )}
-    </>
-  );
-};
-
-export const MemoizedIOTableCell = memo(IOTableCell);
-
 export const JsonSkeleton = ({
   className,
   numRows = 10,
@@ -382,7 +320,7 @@ export const JsonSkeleton = ({
 };
 
 // TODO: deduplicate with PrettyJsonView.tsx
-function stringifyJsonNode(node: unknown) {
+export function stringifyJsonNode(node: unknown) {
   // return single string nodes without quotes
   if (typeof node === "string") {
     return node;
@@ -391,7 +329,7 @@ function stringifyJsonNode(node: unknown) {
   try {
     return JSON.stringify(
       node,
-      (key, value) => {
+      (_key, value) => {
         switch (typeof value) {
           case "bigint":
             return String(value) + "n";

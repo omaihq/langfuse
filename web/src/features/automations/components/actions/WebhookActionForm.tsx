@@ -22,6 +22,7 @@ import {
   type ActionDomain,
   type ActionDomainWithSecrets,
   AvailableWebhookApiSchema,
+  type SafeWebhookActionConfig,
   WebhookDefaultHeaders,
 } from "@langfuse/shared";
 import { api } from "@/src/utils/api";
@@ -320,7 +321,9 @@ export const WebhookActionForm: React.FC<WebhookActionFormProps> = ({
               <div className="flex-1">
                 <CodeView
                   className="bg-muted/50"
-                  content={action.config.displaySecretKey}
+                  content={
+                    (action.config as SafeWebhookActionConfig).displaySecretKey
+                  }
                   defaultCollapsed={false}
                 />
               </div>
@@ -395,10 +398,10 @@ export const RegenerateWebhookSecretButton = ({
             type="button"
             variant="outline"
             size="default"
-            disabled={regenerateSecretMutation.isLoading}
+            disabled={regenerateSecretMutation.isPending}
           >
             <RefreshCw
-              className={`mr-2 h-4 w-4 ${regenerateSecretMutation.isLoading ? "animate-spin" : ""}`}
+              className={`mr-2 h-4 w-4 ${regenerateSecretMutation.isPending ? "animate-spin" : ""}`}
             />
             Regenerate
           </Button>
@@ -415,14 +418,14 @@ export const RegenerateWebhookSecretButton = ({
               type="button"
               variant="outline"
               onClick={() => setShowConfirmPopover(false)}
-              disabled={regenerateSecretMutation.isLoading}
+              disabled={regenerateSecretMutation.isPending}
             >
               Cancel
             </Button>
             <Button
               type="button"
               variant="destructive"
-              loading={regenerateSecretMutation.isLoading}
+              loading={regenerateSecretMutation.isPending}
               onClick={handleRegenerateSecret}
             >
               Regenerate Secret
