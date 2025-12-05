@@ -145,7 +145,7 @@ export const conversationRouter = createTRPCRouter({
         const sessions = await getFilteredSessions({
           projectId: input.projectId,
           allowedUserIds: [input.userId],
-          orderBy: { column: "createdAt", order: "ASC" },
+          orderBy: { column: "createdAt", order: "DESC" },
           limit: input.limit,
           page: 0,
         });
