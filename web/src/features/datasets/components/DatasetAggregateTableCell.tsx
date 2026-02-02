@@ -52,19 +52,20 @@ const DatasetAggregateCellContent = ({
   // Merge server columns with cache-only columns
   const mergedScoreColumns = useMergeScoreColumns(serverScoreColumns);
 
+  // Subtract 1 day from the run item creation timestamp as a buffer in case the trace happened before the run
+  const fromTimestamp = new Date(
+    value.createdAt.getTime() - 24 * 60 * 60 * 1000,
+  );
+
   // conditionally fetch the trace or observation depending on the presence of observationId
   const trace = api.traces.byId.useQuery(
-    { traceId: value.trace.id, projectId },
+    { traceId: value.trace.id, projectId, fromTimestamp },
     {
       enabled: value.observation === undefined,
-      trpc: {
-        context: {
-          skipBatch: true,
-        },
-      },
       refetchOnMount: false,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
+      retry: false,
       staleTime: Infinity,
       meta: { silentHttpCodes },
     },
@@ -77,14 +78,10 @@ const DatasetAggregateCellContent = ({
     },
     {
       enabled: value.observation !== undefined,
-      trpc: {
-        context: {
-          skipBatch: true,
-        },
-      },
       refetchOnMount: false,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
+      retry: false,
       staleTime: Infinity,
       meta: { silentHttpCodes },
     },
@@ -207,6 +204,7 @@ const DatasetAggregateCellContent = ({
               (latencyDiff ? (
                 <DiffLabel
                   diff={latencyDiff}
+                  preferNegativeDiff={true}
                   formatValue={(value) => formatIntervalSeconds(value)}
                   className="ml-1"
                 />
@@ -222,6 +220,7 @@ const DatasetAggregateCellContent = ({
               (totalCostDiff ? (
                 <DiffLabel
                   diff={totalCostDiff}
+                  preferNegativeDiff={true}
                   formatValue={(value) => usdFormatter(value, 2, 4)}
                   className="ml-1"
                 />

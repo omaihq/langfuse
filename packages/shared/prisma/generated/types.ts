@@ -47,12 +47,13 @@ export const LegacyPrismaScoreSource = {
 } as const;
 export type LegacyPrismaScoreSource =
   (typeof LegacyPrismaScoreSource)[keyof typeof LegacyPrismaScoreSource];
-export const ScoreDataType = {
+export const ScoreConfigDataType = {
   CATEGORICAL: "CATEGORICAL",
   NUMERIC: "NUMERIC",
   BOOLEAN: "BOOLEAN",
 } as const;
-export type ScoreDataType = (typeof ScoreDataType)[keyof typeof ScoreDataType];
+export type ScoreConfigDataType =
+  (typeof ScoreConfigDataType)[keyof typeof ScoreConfigDataType];
 export const AnnotationQueueStatus = {
   PENDING: "PENDING",
   COMPLETED: "COMPLETED",
@@ -158,6 +159,7 @@ export type DashboardWidgetChartType =
 export const ActionType = {
   WEBHOOK: "WEBHOOK",
   SLACK: "SLACK",
+  GITHUB_DISPATCH: "GITHUB_DISPATCH",
 } as const;
 export type ActionType = (typeof ActionType)[keyof typeof ActionType];
 export const ActionExecutionStatus = {
@@ -297,6 +299,23 @@ export type BackgroundMigration = {
   worker_id: string | null;
   locked_at: Timestamp | null;
 };
+export type BatchAction = {
+  id: string;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+  project_id: string;
+  user_id: string;
+  action_type: string;
+  table_name: string;
+  status: string;
+  finished_at: Timestamp | null;
+  query: unknown;
+  config: unknown | null;
+  total_count: number | null;
+  processed_count: number | null;
+  failed_count: number | null;
+  log: string | null;
+};
 export type BatchExport = {
   id: string;
   created_at: Generated<Timestamp>;
@@ -361,6 +380,10 @@ export type Comment = {
   updated_at: Generated<Timestamp>;
   content: string;
   author_user_id: string | null;
+  data_field: string | null;
+  path: Generated<string[]>;
+  range_start: Generated<number[]>;
+  range_end: Generated<number[]>;
 };
 export type CommentReaction = {
   id: string;
@@ -420,7 +443,7 @@ export type Dataset = {
 export type DatasetItem = {
   id: string;
   project_id: string;
-  status: Generated<DatasetStatus>;
+  status: Generated<DatasetStatus | null>;
   input: unknown | null;
   expected_output: unknown | null;
   metadata: unknown | null;
@@ -429,6 +452,9 @@ export type DatasetItem = {
   dataset_id: string;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
+  valid_from: Generated<Timestamp>;
+  valid_to: Timestamp | null;
+  is_deleted: Generated<boolean>;
 };
 export type DatasetRunItems = {
   id: string;
@@ -560,7 +586,7 @@ export type LegacyPrismaScore = {
   queue_id: string | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
-  data_type: Generated<ScoreDataType>;
+  data_type: Generated<ScoreConfigDataType>;
 };
 export type LegacyPrismaTrace = {
   id: string;
@@ -727,8 +753,19 @@ export type Price = {
   updated_at: Generated<Timestamp>;
   model_id: string;
   project_id: string | null;
+  pricing_tier_id: string;
   usage_type: string;
   price: string;
+};
+export type PricingTier = {
+  id: string;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+  model_id: string;
+  name: string;
+  is_default: Generated<boolean>;
+  priority: number;
+  conditions: unknown;
 };
 export type Project = {
   id: string;
@@ -787,7 +824,7 @@ export type ScoreConfig = {
   updated_at: Generated<Timestamp>;
   project_id: string;
   name: string;
-  data_type: ScoreDataType;
+  data_type: ScoreConfigDataType;
   is_archived: Generated<boolean>;
   min_value: number | null;
   max_value: number | null;
@@ -877,6 +914,7 @@ export type User = {
   password: string | null;
   image: string | null;
   admin: Generated<boolean>;
+  v4_beta_enabled: Generated<boolean>;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
   feature_flags: Generated<string[]>;
@@ -897,6 +935,7 @@ export type DB = {
   automation_executions: AutomationExecution;
   automations: Automation;
   background_migrations: BackgroundMigration;
+  batch_actions: BatchAction;
   batch_exports: BatchExport;
   billing_meter_backups: BillingMeterBackup;
   blob_storage_integrations: BlobStorageIntegration;
@@ -929,6 +968,7 @@ export type DB = {
   pending_deletions: PendingDeletion;
   posthog_integrations: PosthogIntegration;
   prices: Price;
+  pricing_tiers: PricingTier;
   project_memberships: ProjectMembership;
   projects: Project;
   prompt_dependencies: PromptDependency;

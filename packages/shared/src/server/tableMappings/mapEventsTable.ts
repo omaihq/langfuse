@@ -3,38 +3,7 @@
 
 import { UiColumnMappings } from "../../tableDefinitions";
 
-// TODO
-// Leaving these here for temporary compatibility with legacy traces UI (this may require fixing search condition)
-// user_id should be moved to the main list, and the rest removed.
-export const eventsTableLegacyTraceUiColumnDefinitions: UiColumnMappings = [
-  {
-    uiTableName: "Trace Tags",
-    uiTableId: "traceTags",
-    clickhouseTableName: "traces",
-    clickhouseSelect: "t.tags",
-  },
-  {
-    uiTableName: "User ID",
-    uiTableId: "userId",
-    clickhouseTableName: "traces",
-    clickhouseSelect: 't."user_id"',
-  },
-  {
-    uiTableName: "Trace Name",
-    uiTableId: "traceName",
-    clickhouseTableName: "traces",
-    clickhouseSelect: 't."name"',
-  },
-  {
-    uiTableName: "Trace Environment",
-    uiTableId: "traceEnvironment",
-    clickhouseTableName: "traces",
-    clickhouseSelect: 't."environment"',
-  },
-];
-
-export const eventsTableUiColumnDefinitions: UiColumnMappings = [
-  ...eventsTableLegacyTraceUiColumnDefinitions,
+export const eventsTableNativeUiColumnDefinitions: UiColumnMappings = [
   {
     uiTableName: "Environment",
     uiTableId: "environment",
@@ -42,7 +11,7 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     clickhouseSelect: 'e."environment"',
   },
   {
-    uiTableName: "type",
+    uiTableName: "Type",
     uiTableId: "type",
     clickhouseTableName: "events",
     clickhouseSelect: 'e."type"',
@@ -52,12 +21,6 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     uiTableId: "id",
     clickhouseTableName: "events",
     clickhouseSelect: 'e."span_id"',
-  },
-  {
-    uiTableName: "Type",
-    uiTableId: "type",
-    clickhouseTableName: "events",
-    clickhouseSelect: 'e."type"',
   },
   {
     uiTableName: "Name",
@@ -149,6 +112,12 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     clickhouseSelect: 'e."provided_model_name"',
   },
   {
+    uiTableName: "Provided Model Name",
+    uiTableId: "providedModelName",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."provided_model_name"',
+  },
+  {
     uiTableName: "Model ID",
     uiTableId: "modelId",
     clickhouseTableName: "events",
@@ -192,6 +161,94 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     clickhouseTableName: "events",
     clickhouseSelect: 'e."metadata"',
   },
+  {
+    uiTableName: "Version",
+    uiTableId: "version",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."version"',
+  },
+  {
+    uiTableName: "Prompt Name",
+    uiTableId: "promptName",
+    clickhouseTableName: "events",
+    clickhouseSelect: "e.prompt_name",
+  },
+  {
+    uiTableName: "Input",
+    uiTableId: "input",
+    clickhouseTableName: "events",
+    clickhouseSelect: "e.input",
+  },
+  {
+    uiTableName: "Output",
+    uiTableId: "output",
+    clickhouseTableName: "events",
+    clickhouseSelect: "e.output",
+  },
+  {
+    uiTableName: "Session ID",
+    uiTableId: "sessionId",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."session_id"',
+  },
+  {
+    uiTableName: "Trace Name",
+    uiTableId: "traceName",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."trace_name"',
+  },
+  {
+    uiTableName: "User ID",
+    uiTableId: "userId",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."user_id"',
+  },
+  {
+    uiTableName: "Trace Tags",
+    uiTableId: "traceTags",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."tags"',
+  },
+  {
+    uiTableName: "Tags",
+    uiTableId: "tags",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."tags"',
+  },
+  {
+    uiTableName: "Trace Environment",
+    uiTableId: "traceEnvironment",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."environment"',
+  },
+  {
+    uiTableName: "Has Parent Observation",
+    uiTableId: "hasParentObservation",
+    clickhouseTableName: "events",
+    clickhouseSelect: "e.parent_span_id != ''",
+  },
+  {
+    uiTableName: "Experiment Dataset ID",
+    uiTableId: "experimentDatasetId",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."experiment_dataset_id"',
+  },
+  {
+    uiTableName: "Experiment ID",
+    uiTableId: "experimentId",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."experiment_id"',
+  },
+  {
+    uiTableName: "Experiment Name",
+    uiTableId: "experimentName",
+    clickhouseTableName: "events",
+    clickhouseSelect: 'e."experiment_name"',
+  },
+];
+
+export const eventsTableUiColumnDefinitions: UiColumnMappings = [
+  ...eventsTableNativeUiColumnDefinitions,
   // Scores column duplicated to allow renaming column name. Will be removed once session storage cache is outdated
   // Column names are cached in user sessions - changing them breaks existing filters
   {
@@ -213,33 +270,15 @@ export const eventsTableUiColumnDefinitions: UiColumnMappings = [
     clickhouseSelect: "s.score_categories",
   },
   {
-    uiTableName: "Version",
-    uiTableId: "version",
-    clickhouseTableName: "events",
-    clickhouseSelect: 'e."version"',
+    uiTableName: "Comment Count",
+    uiTableId: "commentCount",
+    clickhouseTableName: "comments",
+    clickhouseSelect: "", // handled by comment filter helpers
   },
   {
-    uiTableName: "Prompt Name",
-    uiTableId: "promptName",
-    clickhouseTableName: "events",
-    clickhouseSelect: "e.prompt_name",
-  },
-  {
-    uiTableName: "Prompt Version",
-    uiTableId: "promptVersion",
-    clickhouseTableName: "events",
-    clickhouseSelect: "e.prompt_version",
-  },
-  {
-    uiTableName: "User ID",
-    uiTableId: "userId",
-    clickhouseTableName: "events",
-    clickhouseSelect: 'e."user_id"',
-  },
-  {
-    uiTableName: "Session ID",
-    uiTableId: "sessionId",
-    clickhouseTableName: "events",
-    clickhouseSelect: 'e."session_id"',
+    uiTableName: "Comment Content",
+    uiTableId: "commentContent",
+    clickhouseTableName: "comments",
+    clickhouseSelect: "", // handled by comment filter helpers
   },
 ];

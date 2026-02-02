@@ -55,7 +55,7 @@ export function CreateSnapshotUserButton({
     try {
       await navigator.clipboard.writeText(resultingUsername);
       toast.success("Username copied to clipboard");
-    } catch (error) {
+    } catch (_error) {
       toast.error("Failed to copy username");
     }
   };

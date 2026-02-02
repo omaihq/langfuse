@@ -17,6 +17,7 @@ migrate
 
 # next.js
 /.next/
+/.next-check/
 /out/
 next-env.d.ts
 
@@ -36,6 +37,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.eslintcache
 
 # local env files
 # do not commit any .env files to git, except for the .env.example file. https://create.t3.gg/en/usage/env-variables#using-environment-variables
@@ -57,12 +59,15 @@ yarn-error.log*
 # openapi spec that is copied during build
 /public/openapi*.yml
 
+# claude meta files
+.claude/tsc-cache
 
 # vscode
 node_modules
 **/node_modules
 **/dist
 **/.next/*
+**/.next-check/*
 **/.turbo/*
 .yarn
 .turbo
@@ -71,3 +76,9 @@ web/test-results/*
 
 # local config files
 *.local.*
+
+# claude meta files
+.claude/tsc-cache
+
+# Refactoring planning files (local only)
+**/.refactor/

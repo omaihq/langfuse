@@ -30,11 +30,9 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import * as z from "zod/v4";
-import { Divider } from "@tremor/react";
 import { CloudPrivacyNotice } from "@/src/features/auth/components/AuthCloudPrivacyNotice";
 import { CloudRegionSwitch } from "@/src/features/auth/components/AuthCloudRegionSwitch";
 import { PasswordInput } from "@/src/components/ui/password-input";
-import { Turnstile } from "@marsidev/react-turnstile";
 import { isAnySsoConfigured } from "@/src/ee/features/multi-tenant-sso/utils";
 import { Code, Key } from "lucide-react";
 import { useRouter } from "next/router";
@@ -44,7 +42,7 @@ import useLocalStorage from "@/src/components/useLocalStorage";
 import { AuthProviderButton } from "@/src/features/auth/components/AuthProviderButton";
 import { cn } from "@/src/utils/tailwind";
 import { useLangfuseCloudRegion } from "@/src/features/organizations/hooks";
-import DOMPurify from "dompurify";
+import { getSafeRedirectPath } from "@/src/utils/redirect";
 
 const credentialAuthForm = z.object({
   email: z.string().email(),
@@ -67,7 +65,11 @@ export type PageProps = {
     azureAd: boolean;
     auth0: boolean;
     cognito: boolean;
-    keycloak: boolean;
+    keycloak:
+      | {
+          name: string;
+        }
+      | boolean;
     workos:
       | {
           organizationId: string;
@@ -89,7 +91,7 @@ export type PageProps = {
 };
 
 // Also used in src/pages/auth/sign-up.tsx
-// eslint-disable-next-line @typescript-eslint/require-await
+
 export const getServerSideProps: GetServerSideProps<PageProps> = async () => {
   const sso: boolean = await isAnySsoConfigured();
   return {
@@ -136,7 +138,11 @@ export const getServerSideProps: GetServerSideProps<PageProps> = async () => {
         keycloak:
           env.AUTH_KEYCLOAK_CLIENT_ID !== undefined &&
           env.AUTH_KEYCLOAK_CLIENT_SECRET !== undefined &&
-          env.AUTH_KEYCLOAK_ISSUER !== undefined,
+          env.AUTH_KEYCLOAK_ISSUER !== undefined
+            ? env.AUTH_KEYCLOAK_NAME !== undefined
+              ? { name: env.AUTH_KEYCLOAK_NAME }
+              : true
+            : false,
         workos:
           env.AUTH_WORKOS_CLIENT_ID !== undefined &&
           env.AUTH_WORKOS_CLIENT_SECRET !== undefined
@@ -340,7 +346,11 @@ export function SSOButtons({
           {authProviders.keycloak && (
             <AuthProviderButton
               icon={<SiKeycloak className="mr-3" size={18} />}
-              label="Keycloak"
+              label={
+                typeof authProviders.keycloak === "object"
+                  ? authProviders.keycloak.name
+                  : "Keycloak"
+              }
               onClick={() => {
                 capture("sign_in:button_click", { provider: "keycloak" });
                 onProviderSelect?.("keycloak");
@@ -476,7 +486,7 @@ export function useHuggingFaceRedirect(runningOnHuggingFaceSpaces: boolean) {
     const isInIframe = () => {
       try {
         return window.self !== window.top;
-      } catch (e) {
+      } catch {
         return true;
       }
     };
@@ -552,11 +562,6 @@ export default function SignIn({
 
   const capture = usePostHogClientCapture();
   const { isLangfuseCloud } = useLangfuseCloudRegion();
-  const [turnstileToken, setTurnstileToken] = useState<string>();
-  // Used to refresh turnstile as the token can only be used once
-  const [turnstileCData, setTurnstileCData] = useState<string>(
-    new Date().getTime().toString(),
-  );
 
   // Count available auth methods to determine if we should show "Last used" badge
   const availableProviders = Object.entries(authProviders).filter(
@@ -569,16 +574,9 @@ export default function SignIn({
   const emailParam = router.query.email as string | undefined;
 
   // Validate targetPath to prevent open redirect attacks
-  const sanitizedTargetPath = queryTargetPath
-    ? DOMPurify.sanitize(queryTargetPath)
+  const targetPath = queryTargetPath
+    ? getSafeRedirectPath(queryTargetPath)
     : undefined;
-
-  // Only allow relative links (must start with '/' but not '//')
-  const targetPath =
-    sanitizedTargetPath?.startsWith("/") &&
-    !sanitizedTargetPath.startsWith("//")
-      ? sanitizedTargetPath
-      : undefined;
 
   // Credentials
   const credentialsForm = useForm({
@@ -603,7 +601,6 @@ export default function SignIn({
         password: values.password,
         callbackUrl: targetPath ?? "/",
         redirect: false,
-        turnstileToken,
       });
       if (result === undefined) {
         setCredentialsFormError("An unexpected error occurred.");
@@ -624,12 +621,6 @@ export default function SignIn({
       captureException(error);
       console.error(error);
       setCredentialsFormError("An unexpected error occurred.");
-    } finally {
-      // Refresh turnstile as the token can only be used once
-      if (env.NEXT_PUBLIC_TURNSTILE_SITE_KEY && turnstileToken) {
-        setTurnstileCData(new Date().getTime().toString());
-        setTurnstileToken(undefined);
-      }
     }
   }
 
@@ -742,7 +733,6 @@ export default function SignIn({
                 <Form {...credentialsForm}>
                   <form
                     className="space-y-6"
-                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
                     onSubmit={
                       showPasswordStep
                         ? credentialsForm.handleSubmit(onCredentialsSubmit)
@@ -760,7 +750,12 @@ export default function SignIn({
                         <FormItem>
                           <FormLabel>Email</FormLabel>
                           <FormControl>
-                            <Input placeholder="jsdoe@example.com" {...field} />
+                            <Input
+                              placeholder="jsdoe@example.com"
+                              allowPasswordManager
+                              autoComplete="email"
+                              {...field}
+                            />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -804,9 +799,6 @@ export default function SignIn({
                           : continueLoading
                       }
                       disabled={
-                        (env.NEXT_PUBLIC_TURNSTILE_SITE_KEY !== undefined &&
-                          showPasswordStep &&
-                          turnstileToken === undefined) ||
                         credentialsForm.watch("email") === "" ||
                         (showPasswordStep &&
                           credentialsForm.watch("password") === "")
@@ -845,24 +837,6 @@ export default function SignIn({
               onProviderSelect={setLastUsedAuthMethod}
             />
           </div>
-          {
-            // Turnstile exists copy-paste also on sign-up.tsx
-            env.NEXT_PUBLIC_TURNSTILE_SITE_KEY !== undefined && (
-              <>
-                <Divider className="text-muted-foreground" />
-                <Turnstile
-                  siteKey={env.NEXT_PUBLIC_TURNSTILE_SITE_KEY}
-                  options={{
-                    theme: "light",
-                    action: "sign-in",
-                    cData: turnstileCData,
-                  }}
-                  className="mx-auto"
-                  onSuccess={setTurnstileToken}
-                />
-              </>
-            )
-          }
 
           {!signUpDisabled &&
           env.NEXT_PUBLIC_SIGN_UP_DISABLED !== "true" &&

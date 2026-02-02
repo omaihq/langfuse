@@ -28,6 +28,7 @@ import {
   datasetFormFilterColsWithOptions,
   availableDatasetEvalVariables,
   type ObservationType,
+  LangfuseInternalTraceEnvironment,
 } from "@langfuse/shared";
 import { z } from "zod/v4";
 import { useEffect, useMemo, useState, memo } from "react";
@@ -48,6 +49,7 @@ import {
   isTraceOrDatasetObject,
   isTraceTarget,
   type LangfuseObject,
+  type VariableMapping,
 } from "@/src/features/evals/utils/evaluator-form-utils";
 import { ExecutionCountTooltip } from "@/src/features/evals/components/execution-count-tooltip";
 import {
@@ -80,6 +82,43 @@ import { InfoIcon } from "lucide-react";
 const TracesTable = lazy(
   () => import("@/src/components/table/use-cases/traces"),
 );
+
+const OUTPUT_MAPPING = [
+  "generation",
+  "output",
+  "response",
+  "answer",
+  "completion",
+];
+
+const INTERNAL_ENVIRONMENTS = [
+  LangfuseInternalTraceEnvironment.LLMJudge,
+  "langfuse-prompt-experiments",
+  "langfuse-evaluation",
+  "sdk-experiment",
+] as const;
+
+// Default filter for new trace evaluators - excludes internal Langfuse environments
+// to prevent evaluators from running on their own traces
+const DEFAULT_TRACE_FILTER = [
+  {
+    column: "environment",
+    operator: "none of" as const,
+    value: [...INTERNAL_ENVIRONMENTS],
+    type: "stringOptions" as const,
+  },
+];
+
+const inferDefaultMapping = (
+  variable: string,
+): Pick<VariableMapping, "langfuseObject" | "selectedColumnId"> => {
+  return {
+    langfuseObject: "trace" as const,
+    selectedColumnId: OUTPUT_MAPPING.includes(variable.toLowerCase())
+      ? "output"
+      : "input",
+  };
+};
 
 const fieldHasJsonSelectorOption = (
   selectedColumnId: string | undefined | null,
@@ -162,7 +201,10 @@ export const InnerEvaluatorForm = (props: {
       target: props.existingEvaluator?.targetObject ?? "trace",
       filter: props.existingEvaluator?.filter
         ? z.array(singleFilter).parse(props.existingEvaluator.filter)
-        : [],
+        : // For new trace evaluators, exclude internal environments by default
+          (props.existingEvaluator?.targetObject ?? "trace") === "trace"
+          ? DEFAULT_TRACE_FILTER
+          : [],
       mapping: props.existingEvaluator?.variableMapping
         ? z
             .array(variableMapping)
@@ -284,8 +326,7 @@ export const InnerEvaluatorForm = (props: {
         "mapping",
         props.evalTemplate.vars.map((v) => ({
           templateVariable: v,
-          langfuseObject: "trace" as const,
-          selectedColumnId: "input",
+          ...inferDefaultMapping(v),
         })),
       );
       form.setValue("scoreName", `${props.evalTemplate.name}`);
@@ -408,9 +449,7 @@ export const InnerEvaluatorForm = (props: {
         }
       })
       .catch((error) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         if ("message" in error && typeof error.message === "string") {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
           setFormError(error.message as string);
           return;
         } else {
@@ -653,7 +692,6 @@ export const InnerEvaluatorForm = (props: {
                             ) => {
                               field.onChange(value);
                               if (router.query.traceId) {
-                                // eslint-disable-next-line @typescript-eslint/no-unused-vars
                                 const { traceId, ...otherParams } =
                                   router.query;
                                 router.replace(
@@ -1145,7 +1183,6 @@ export const InnerEvaluatorForm = (props: {
   return (
     <Form {...form}>
       <form
-        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         onSubmit={(e) => {
           e.stopPropagation(); // Prevent event bubbling to parent forms
           form.handleSubmit(onSubmit)(e);

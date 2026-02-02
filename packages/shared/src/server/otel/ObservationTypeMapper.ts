@@ -1,4 +1,3 @@
-/* eslint-disable no-unused-vars */
 import { LangfuseOtelSpanAttributes } from "./attributes";
 import { type ObservationType, ObservationTypeDomain } from "../../";
 
@@ -241,7 +240,9 @@ export class ObservationTypeMapperRegistry {
         // Format:
         // GenAI Value: Langfuse ObservationType
         chat: "GENERATION",
+        // completion was used historically (keeping it for backward compatibility), text_completion is per spec as of 2025-12-04
         completion: "GENERATION",
+        text_completion: "GENERATION",
         generate_content: "GENERATION",
         generate: "GENERATION",
         embeddings: "EMBEDDING",
@@ -271,11 +272,12 @@ export class ObservationTypeMapperRegistry {
 
         // Only handle generation and embedding operations
         const generationEmbeddingPrefixes = [
-          "ai.generateText",
-          "ai.streamText",
-          "ai.generateObject",
-          "ai.streamObject",
-          "ai.embed",
+          "ai.generateText.doGenerate",
+          "ai.streamText.doStream",
+          "ai.generateObject.doGenerate",
+          "ai.streamObject.doStream",
+          "ai.embedMany.doEmbed",
+          "ai.embed.doEmbed",
         ];
 
         const isGenerationOrEmbedding = matchesVercelAiSdkOperation(
@@ -290,18 +292,16 @@ export class ObservationTypeMapperRegistry {
         // IMPORTANT: prefixes inversely ordered by length to avoid false matches
         // AI SDK may append function ID after operation name (e.g., "ai.embed my-function")
         const prefixMappings: Array<[string[], LangfuseObservationType]> = [
-          [["ai.generateText.doGenerate"], "GENERATION"],
-          [["ai.generateText"], "GENERATION"],
-          [["ai.streamText.doStream"], "GENERATION"],
-          [["ai.streamText"], "GENERATION"],
-          [["ai.generateObject.doGenerate"], "GENERATION"],
-          [["ai.generateObject"], "GENERATION"],
-          [["ai.streamObject.doStream"], "GENERATION"],
-          [["ai.streamObject"], "GENERATION"],
-          [["ai.embed.doEmbed"], "EMBEDDING"],
-          [["ai.embedMany.doEmbed"], "EMBEDDING"],
-          [["ai.embedMany"], "EMBEDDING"],
-          [["ai.embed"], "EMBEDDING"],
+          [
+            [
+              "ai.generateText.doGenerate",
+              "ai.streamText.doStream",
+              "ai.generateObject.doGenerate",
+              "ai.streamObject.doStream",
+            ],
+            "GENERATION",
+          ],
+          [["ai.embedMany.doEmbed", "ai.embed.doEmbed"], "EMBEDDING"],
         ];
 
         for (const [prefixes, type] of prefixMappings) {
@@ -340,11 +340,12 @@ export class ObservationTypeMapperRegistry {
         // technically, not required here because the generation-like mapper has higher priority
         // but to keep them interchangeable, we reject them here
         const generationEmbeddingPrefixes = [
-          "ai.generateText",
-          "ai.streamText",
-          "ai.generateObject",
-          "ai.streamObject",
-          "ai.embed",
+          "ai.generateText.doGenerate",
+          "ai.streamText.doStream",
+          "ai.generateObject.doGenerate",
+          "ai.streamObject.doStream",
+          "ai.embedMany.doEmbed",
+          "ai.embed.doEmbed",
         ];
 
         const isGenerationOrEmbedding = matchesVercelAiSdkOperation(
@@ -364,9 +365,25 @@ export class ObservationTypeMapperRegistry {
       },
     ),
 
+    // GenAI tool call detection (e.g., Pydantic AI, any framework using gen_ai.tool.* attributes)
+    // unfortunately, Pydantic does not set the gen_ai.operation.name attribute on tool calls
+    // therefore, we need another mapper here.
+    new CustomAttributeMapper(
+      "GenAI_Tool_Call",
+      6,
+      (attributes) => {
+        // Check for standard GenAI tool call attributes
+        return (
+          hasMeaningfulValue(attributes["gen_ai.tool.name"]) ||
+          hasMeaningfulValue(attributes["gen_ai.tool.call.id"])
+        );
+      },
+      () => "TOOL",
+    ),
+
     new CustomAttributeMapper(
       "ModelBased",
-      6,
+      7,
       (attributes, _resourceAttributes, _scopeData) => {
         const modelKeys = [
           LangfuseOtelSpanAttributes.OBSERVATION_MODEL,
@@ -396,7 +413,7 @@ export class ObservationTypeMapperRegistry {
     attributes: Record<string, unknown>,
     resourceAttributes?: Record<string, unknown>,
     scopeData?: Record<string, unknown>,
-  ): LangfuseObservationType | null {
+  ): LangfuseObservationType {
     const sortedMappers = this.getSortedMappers();
     for (const mapper of sortedMappers) {
       if (mapper.canMap(attributes, resourceAttributes, scopeData)) {
@@ -411,7 +428,7 @@ export class ObservationTypeMapperRegistry {
       }
     }
 
-    return null;
+    return "SPAN";
   }
 
   getMappersForDebugging(): ReadonlyArray<ObservationTypeMapper> {

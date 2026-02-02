@@ -1,6 +1,12 @@
 import { OBSERVATIONS_TO_TRACE_INTERVAL } from "../../repositories/constants";
 
 /**
+ * Types for structured ORDER BY API
+ */
+export type OrderByDirection = "ASC" | "DESC";
+export type OrderByEntry = { column: string; direction: OrderByDirection };
+
+/**
  * Field mapping: each field defined once with its full SELECT expression
  * All queries use `FROM events e` with alias, so all fields use `e.` prefix
  */
@@ -48,6 +54,11 @@ const EVENTS_FIELDS = {
   promptId: 'e.prompt_id as "prompt_id"',
   promptName: 'e.prompt_name as "prompt_name"',
   promptVersion: 'e.prompt_version as "prompt_version"',
+
+  // Tool fields
+  toolDefinitions: 'e.tool_definitions as "tool_definitions"',
+  toolCalls: 'e.tool_calls as "tool_calls"',
+  toolCallNames: 'e.tool_call_names as "tool_call_names"',
 
   // I/O & metadata fields
   input: "e.input",
@@ -97,10 +108,16 @@ const FIELD_SETS = {
     "promptName",
     "promptVersion",
     "internalModelId",
+    "userId",
+    "sessionId",
+    "toolDefinitions",
+    "toolCalls",
+    "toolCallNames",
   ],
   calculated: ["latency", "timeToFirstToken"],
   io: ["input", "output"],
   metadata: ["metadata"],
+  tools: ["toolDefinitions", "toolCalls", "toolCallNames"],
   eventTs: ["eventTs"],
 
   // getById field sets (reuse the same fields - all queries use `FROM events e`)
@@ -118,6 +135,9 @@ const FIELD_SETS = {
     "level",
     "statusMessage",
     "version",
+    "toolDefinitions",
+    "toolCalls",
+    "toolCallNames",
   ],
   byIdModel: [
     "providedModelName",
@@ -132,7 +152,36 @@ const FIELD_SETS = {
   ],
   byIdPrompt: ["promptId", "promptName", "promptVersion"],
   byIdTimestamps: ["createdAt", "updatedAt", "eventTs"],
+
+  // Public API v2 field sets (field groups for selective fetching)
+  core: [
+    "id",
+    "traceId",
+    "startTime",
+    "endTime",
+    "projectId",
+    "parentObservationId",
+    "type",
+  ],
+  basic: [
+    "name",
+    "level",
+    "statusMessage",
+    "version",
+    "environment",
+    "bookmarked",
+    "public",
+    "userId",
+    "sessionId",
+  ],
+  time: ["completionStartTime", "createdAt", "updatedAt"],
+  model: ["providedModelName", "internalModelId", "modelParameters"],
+  usage: ["usageDetails", "costDetails", "totalCost"],
+  prompt: ["promptId", "promptName", "promptVersion"],
+  metrics: ["latency", "timeToFirstToken"],
 } as const;
+
+export type FieldSetName = keyof typeof FIELD_SETS;
 
 /**
  * Aggregation fields for trace-level queries
@@ -144,7 +193,7 @@ const EVENTS_AGGREGATION_FIELDS = {
   projectId: "project_id",
 
   // Aggregated fields
-  name: "argMaxIf(name, event_ts, parent_span_id = '') AS name",
+  name: "argMaxIf(trace_name, event_ts, trace_name <> '') AS name",
   timestamp: "min(start_time) as timestamp",
   environment:
     "argMaxIf(environment, event_ts, environment <> '') AS environment",
@@ -170,9 +219,19 @@ const EVENTS_AGGREGATION_FIELDS = {
   bookmarked:
     "argMaxIf(bookmarked, event_ts, parent_span_id = '') AS bookmarked",
   public: "max(public) AS public",
-  // Legacy fields for backward compatibility
-  tags: "array() AS tags",
-  release: "'' AS release",
+
+  // Observation-level aggregations for filtering support
+  usage_details: "sumMap(usage_details) as usage_details",
+  cost_details: "sumMap(cost_details) as cost_details",
+  aggregated_level:
+    "multiIf(arrayExists(x -> x = 'ERROR', groupArray(level)), 'ERROR', arrayExists(x -> x = 'WARNING', groupArray(level)), 'WARNING', arrayExists(x -> x = 'DEFAULT', groupArray(level)), 'DEFAULT', 'DEBUG') AS aggregated_level",
+  warning_count: "countIf(level = 'WARNING') as warning_count",
+  error_count: "countIf(level = 'ERROR') as error_count",
+  default_count: "countIf(level = 'DEFAULT') as default_count",
+  debug_count: "countIf(level = 'DEBUG') as debug_count",
+
+  tags: "argMaxIf(tags, event_ts, notEmpty(tags)) AS tags",
+  release: "argMaxIf(release, event_ts, release <> '') AS release",
 } as const;
 
 /**
@@ -247,10 +306,13 @@ abstract class AbstractQueryBuilder {
    * Add LIMIT and OFFSET
    */
   limit(limit?: number, offset?: number): this {
-    if (limit !== undefined && offset !== undefined) {
+    if (limit !== undefined && offset !== undefined && offset > 0) {
       this.limitClause = "LIMIT {limit: Int32} OFFSET {offset: Int32}";
       this.params.limit = limit;
       this.params.offset = offset;
+    } else if (limit !== undefined) {
+      this.limitClause = "LIMIT {limit: Int32}";
+      this.params.limit = limit;
     } else {
       this.limitClause = "";
     }
@@ -263,7 +325,7 @@ abstract class AbstractQueryBuilder {
   when<T extends AbstractQueryBuilder>(
     this: T,
     condition: boolean,
-    // eslint-disable-next-line no-unused-vars
+
     fn: (builder: T) => T,
   ): T {
     return condition ? fn(this) : this;
@@ -353,11 +415,48 @@ abstract class BaseEventsQueryBuilder<
   protected projectId: string | NoProjectIdType;
 
   constructor(
-    protected fields: TFields, // eslint-disable-line no-unused-vars
+    protected fields: TFields,
     options: { projectId: string | NoProjectIdType },
   ) {
     super();
     this.projectId = options.projectId;
+  }
+
+  /**
+   * Set ORDER BY clause with automatic project_id prepending for optimal ClickHouse performance.
+   * The events table has ORDER BY (project_id, start_time, ...) so queries should match.
+   *
+   * @example
+   * builder.orderByColumns([
+   *   { column: "e.start_time", direction: "DESC" },
+   *   { column: "e.event_ts", direction: "DESC" },
+   * ])
+   * // Produces: ORDER BY e.project_id DESC, e.start_time DESC, e.event_ts DESC
+   */
+  orderByColumns(entries: OrderByEntry[]): this {
+    if (!entries.length) {
+      return this;
+    }
+
+    // Use the direction of the first column for project_id
+    const primaryDirection = entries[0].direction;
+
+    // Build ORDER BY clause with project_id prepended
+    const columns = [
+      `e.project_id ${primaryDirection}`,
+      ...entries.map((e) => `${e.column} ${e.direction}`),
+    ];
+
+    this.orderByClause = `ORDER BY ${columns.join(", ")}`;
+    return this;
+  }
+
+  /**
+   * Apply default ORDER BY for events table queries.
+   * Uses start_time DESC (project_id is auto-prepended).
+   */
+  orderByDefault(): this {
+    return this.orderByColumns([{ column: "e.start_time", direction: "DESC" }]);
   }
 
   /**
@@ -448,6 +547,8 @@ export class EventsQueryBuilder extends BaseEventsQueryBuilder<
   typeof EVENTS_FIELDS
 > {
   private ioFields: { truncated: boolean; charLimit?: number } | null = null;
+  // Metadata expansion config: null = use truncated (default), string[] = expand specific keys, empty array = expand all
+  private metadataExpansionKeys: string[] | null = null;
 
   /**
    * Constructor
@@ -465,9 +566,26 @@ export class EventsQueryBuilder extends BaseEventsQueryBuilder<
   }
 
   /**
+   * Select metadata with expanded values for specified keys.
+   * Expands truncated metadata values by coalescing with metadata_long_values.
+   *
+   * @param keys - Keys to expand. Only the specified keys will have their full values returned.
+   *
+   * @example
+   * // Expand specific keys only
+   * builder.selectMetadataExpanded(['transcript', 'transitions'])
+   */
+  selectMetadataExpanded(keys: string[]): this {
+    this.metadataExpansionKeys = keys;
+    // Also ensure metadata is in the select fields (will be replaced in buildSelectClause)
+    this.selectFields.add("metadata");
+    return this;
+  }
+
+  /**
    * Add SELECT fields from predefined field sets
    */
-  selectFieldSet(...setNames: Array<keyof typeof FIELD_SETS>): this {
+  selectFieldSet(...setNames: Array<FieldSetName>): this {
     setNames
       .flatMap((s) => {
         return FIELD_SETS[s];
@@ -491,10 +609,22 @@ export class EventsQueryBuilder extends BaseEventsQueryBuilder<
    */
   protected buildSelectClause(): string {
     // Build field expressions from field keys
-    // If ioFields are configured, exclude regular input/output from selectFields
-    const fieldsToProcess = this.ioFields
-      ? [...this.selectFields].filter((f) => f !== "input" && f !== "output")
-      : [...this.selectFields];
+    // Exclude fields that have custom handling (IO, metadata)
+    let fieldsToExclude: string[] = [];
+    if (this.ioFields) {
+      fieldsToExclude.push("input", "output");
+    }
+    // Only exclude metadata if we have actual keys to expand
+    if (
+      this.metadataExpansionKeys !== null &&
+      this.metadataExpansionKeys.length > 0
+    ) {
+      fieldsToExclude.push("metadata");
+    }
+
+    const fieldsToProcess = [...this.selectFields].filter(
+      (f) => !fieldsToExclude.includes(f),
+    );
 
     const fieldExpressions: string[] = fieldsToProcess.flatMap((fieldKey) => {
       const fieldExpr = EVENTS_FIELDS[fieldKey as keyof typeof EVENTS_FIELDS];
@@ -510,6 +640,30 @@ export class EventsQueryBuilder extends BaseEventsQueryBuilder<
       } else {
         fieldExpressions.push("input, output");
       }
+    }
+
+    // Add metadata field with expansion if configured
+    if (
+      this.metadataExpansionKeys !== null &&
+      this.metadataExpansionKeys.length > 0 &&
+      this.selectFields.has("metadata")
+    ) {
+      // Add keys to params for safe parameterized query
+      this.params.expandMetadataKeys = this.metadataExpansionKeys;
+
+      fieldExpressions.push(`mapFromArrays(
+        e.metadata_names,
+        arrayMap(
+          (name, prefix, hash) -> if(
+            has({expandMetadataKeys: Array(String)}, name) AND isNotNull(hash) AND mapContains(e.metadata_long_values, hash),
+            e.metadata_long_values[hash],
+            prefix
+          ),
+          e.metadata_names,
+          e.metadata_prefixes,
+          e.metadata_hashes
+        )
+      ) as metadata`);
     }
 
     return `SELECT\n  ${fieldExpressions.join(",\n  ")}`;

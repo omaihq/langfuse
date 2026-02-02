@@ -4,23 +4,17 @@ import { type ColumnDefinition } from "./tableDefinitions";
 // Used for filtering, sorting, and mapping UI columns to ClickHouse columns
 export const eventsTableCols: ColumnDefinition[] = [
   {
-    name: "Span ID",
-    id: "spanId",
-    type: "string",
+    name: "ID",
+    id: "id",
+    type: "stringOptions",
     internal: "e.span_id",
+    options: [], // to be added at runtime
   },
   {
     name: "Trace ID",
     id: "traceId",
     type: "string",
     internal: "e.trace_id",
-  },
-  {
-    name: "Parent Span ID",
-    id: "parentSpanId",
-    type: "string",
-    internal: "e.parent_span_id",
-    nullable: true,
   },
   {
     name: "Start Time",
@@ -80,6 +74,14 @@ export const eventsTableCols: ColumnDefinition[] = [
     nullable: true,
   },
   {
+    name: "Trace Name",
+    id: "traceName",
+    type: "stringOptions",
+    internal: "e.trace_name",
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
     name: "Level",
     id: "level",
     type: "stringOptions",
@@ -94,32 +96,11 @@ export const eventsTableCols: ColumnDefinition[] = [
     nullable: true,
   },
   {
-    name: "Completion Start Time",
-    id: "completionStartTime",
-    type: "datetime",
-    internal: "e.completion_start_time",
-    nullable: true,
-  },
-  {
-    name: "Prompt ID",
-    id: "promptId",
-    type: "string",
-    internal: "e.prompt_id",
-    nullable: true,
-  },
-  {
     name: "Prompt Name",
     id: "promptName",
     type: "stringOptions",
     internal: "e.prompt_name",
     options: [], // to be added at runtime
-    nullable: true,
-  },
-  {
-    name: "Prompt Version",
-    id: "promptVersion",
-    type: "string",
-    internal: "e.prompt_version",
     nullable: true,
   },
   {
@@ -136,13 +117,6 @@ export const eventsTableCols: ColumnDefinition[] = [
     type: "stringOptions",
     internal: "e.provided_model_name",
     options: [], // to be added at runtime
-    nullable: true,
-  },
-  {
-    name: "Model Parameters",
-    id: "modelParameters",
-    type: "string",
-    internal: "e.model_parameters",
     nullable: true,
   },
   {
@@ -237,56 +211,6 @@ export const eventsTableCols: ColumnDefinition[] = [
     internal: "e.metadata",
   },
   {
-    name: "Service Version",
-    id: "serviceVersion",
-    type: "string",
-    internal: "e.service_version",
-    nullable: true,
-  },
-  {
-    name: "Scope Name",
-    id: "scopeName",
-    type: "string",
-    internal: "e.scope_name",
-    nullable: true,
-  },
-  {
-    name: "Scope Version",
-    id: "scopeVersion",
-    type: "string",
-    internal: "e.scope_version",
-    nullable: true,
-  },
-  {
-    name: "Telemetry SDK Language",
-    id: "telemetrySdkLanguage",
-    type: "string",
-    internal: "e.telemetry_sdk_language",
-    nullable: true,
-  },
-  {
-    name: "Telemetry SDK Name",
-    id: "telemetrySdkName",
-    type: "string",
-    internal: "e.telemetry_sdk_name",
-    nullable: true,
-  },
-  {
-    name: "Telemetry SDK Version",
-    id: "telemetrySdkVersion",
-    type: "string",
-    internal: "e.telemetry_sdk_version",
-    nullable: true,
-  },
-  {
-    name: "Trace Name",
-    id: "traceName",
-    type: "stringOptions",
-    internal: "t.name",
-    options: [], // to be added at runtime
-    nullable: true,
-  },
-  {
     name: "Trace Tags",
     id: "traceTags",
     type: "arrayOptions",
@@ -304,6 +228,48 @@ export const eventsTableCols: ColumnDefinition[] = [
     id: "score_categories",
     type: "categoryOptions",
     internal: "score_categories",
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
+    name: "Comment Count",
+    id: "commentCount",
+    type: "number",
+    internal: "", // handled by comment filter helpers
+  },
+  {
+    name: "Comment Content",
+    id: "commentContent",
+    type: "string",
+    internal: "", // handled by comment filter helpers
+  },
+  {
+    name: "Has Parent Observation",
+    id: "hasParentObservation",
+    type: "boolean",
+    internal: "e.parent_span_id != ''",
+  },
+  {
+    name: "Experiment Dataset ID",
+    id: "experimentDatasetId",
+    type: "stringOptions",
+    internal: "e.experiment_dataset_id",
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
+    name: "Experiment ID",
+    id: "experimentId",
+    type: "stringOptions",
+    internal: "e.experiment_id",
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
+    name: "Experiment Name",
+    id: "experimentName",
+    type: "stringOptions",
+    internal: "e.experiment_name",
     options: [], // to be added at runtime
     nullable: true,
   },

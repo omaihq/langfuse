@@ -93,7 +93,7 @@ export const InternalThoughts = ({
                     let parsedThought;
                     try {
                       parsedThought = thought;
-                    } catch (error) {
+                    } catch (_error) {
                       // If parsing fails, show the original text
                       return (
                         <div

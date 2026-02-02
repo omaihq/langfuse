@@ -7,7 +7,6 @@ import {
 } from "@langfuse/shared/src/server";
 import { decrypt } from "@langfuse/shared/encryption";
 import { ApiError } from "@langfuse/shared";
-import Handlebars from "handlebars";
 import { z } from "zod";
 import { type ZodSchema } from "zod";
 
@@ -109,16 +108,22 @@ export async function callLLM(
   }, "call LLM");
 }
 
-export function compileHandlebarString(
-  handlebarString: string,
+export function compileTemplateString(
+  template: string,
   context: Record<string, any>,
 ): string {
   try {
-    const template = Handlebars.compile(handlebarString, { noEscape: true });
-    return template(context);
+    return template.replace(/{{\s*([\w.]+)\s*}}/g, (match, key) => {
+      if (key in context) {
+        const value = context[key];
+        return value === undefined || value === null ? "" : String(value);
+      }
+      return match; // missing key → return original variable including its braces
+    });
   } catch (error) {
-    logger.info("Handlebars compilation error:", error);
-    return handlebarString; // Fallback to the original string if Handlebars fails
+    logger.info("Template compilation error:", error);
+
+    return template;
   }
 }
 
@@ -150,3 +155,19 @@ export function createW3CTraceId(seed?: string): string {
     return crypto.randomBytes(16).toString("hex"); // already 32 chars
   }
 }
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Calculate the retention cutoff date for a given number of retention days.
+ * Returns a Date representing the timestamp before which data should be deleted.
+ */
+export const getRetentionCutoffDate = (
+  retentionDays: number,
+  referenceDate: Date = new Date(),
+): Date => {
+  return new Date(referenceDate.getTime() - retentionDays * MS_PER_DAY);
+};
+
+// Alias for backward compatibility with code that uses the old Handlebars-based name
+export const compileHandlebarString = compileTemplateString;

@@ -56,12 +56,33 @@ export const env = createEnv({
     CHAINLIT_AUTH_SECRET: z.string().optional(),
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
-    // Add newly signed up users to default org and/or project with role
-    LANGFUSE_DEFAULT_ORG_ID: z.string().optional(),
+    // Add newly signed up users to default org(s) and/or project(s) with role
+    // Supports comma-separated IDs for multiple orgs/projects (e.g., "org1,org2,org3")
+    LANGFUSE_DEFAULT_ORG_ID: z
+      .string()
+      .optional()
+      .transform((val) =>
+        val
+          ? val
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : undefined,
+      ),
     LANGFUSE_DEFAULT_ORG_ROLE: z
       .enum(["OWNER", "ADMIN", "MEMBER", "VIEWER", "NONE"])
       .optional(),
-    LANGFUSE_DEFAULT_PROJECT_ID: z.string().optional(),
+    LANGFUSE_DEFAULT_PROJECT_ID: z
+      .string()
+      .optional()
+      .transform((val) =>
+        val
+          ? val
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : undefined,
+      ),
     LANGFUSE_DEFAULT_PROJECT_ROLE: z
       .enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"])
       .optional(),
@@ -151,6 +172,7 @@ export const env = createEnv({
       .enum(["true", "false"])
       .optional()
       .default("true"),
+    AUTH_KEYCLOAK_NAME: z.string().optional(),
     AUTH_JUMPCLOUD_CLIENT_ID: z.string().optional(),
     AUTH_JUMPCLOUD_CLIENT_SECRET: z.string().optional(),
     AUTH_JUMPCLOUD_ISSUER: z.string().url().optional(),
@@ -197,8 +219,6 @@ export const env = createEnv({
     EMAIL_FROM_ADDRESS: z.string().optional(),
     SMTP_CONNECTION_URL: z.string().optional(),
 
-    TURNSTILE_SECRET_KEY: z.string().optional(),
-
     // Otel
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default("http://localhost:4318"),
     OTEL_SERVICE_NAME: z.string().default("web"),
@@ -211,6 +231,9 @@ export const env = createEnv({
     CLICKHOUSE_USER: z.string(),
     CLICKHOUSE_PASSWORD: z.string(),
     CLICKHOUSE_CLUSTER_ENABLED: z.enum(["true", "false"]).default("true"),
+    CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY: z.coerce
+      .number()
+      .default(32_000_000_000), // ~32GB
 
     // EE ui customization
     LANGFUSE_UI_API_HOST: z.string().optional(),
@@ -279,8 +302,6 @@ export const env = createEnv({
     STRIPE_WEBHOOK_SIGNING_SECRET: z.string().optional(),
     SENTRY_AUTH_TOKEN: z.string().optional(),
     SENTRY_CSP_REPORT_URI: z.string().optional(),
-    BETTERSTACK_UPTIME_API_KEY: z.string().optional(),
-    BETTERSTACK_UPTIME_STATUS_PAGE_ID: z.string().optional(),
     LANGFUSE_RATE_LIMITS_ENABLED: z.enum(["true", "false"]).default("true"),
 
     LANGFUSE_INIT_ORG_ID: z.string().optional(),
@@ -325,9 +346,9 @@ export const env = createEnv({
     LANGFUSE_AI_FEATURES_PROJECT_ID: z.string().optional(),
 
     // API Performance Flags
-    // Whether to add a `FINAL` modifier to the observations CTE in GET /api/public/traces.
-    // Can be used to improve performance for self-hosters that are fully on the new OTel SDKs.
-    LANGFUSE_API_CLICKHOUSE_DISABLE_OBSERVATIONS_FINAL: z
+    // Enable Redis-based tracking of projects using OTEL API to optimize ClickHouse queries.
+    // When enabled, projects ingesting via OTEL API skip the FINAL modifier on some observations queries for better performance.
+    LANGFUSE_SKIP_FINAL_FOR_OTEL_PROJECTS: z
       .enum(["true", "false"])
       .default("false"),
     // Whether to propagate the toTimestamp restriction (including a server-side offset)
@@ -345,6 +366,31 @@ export const env = createEnv({
     LANGFUSE_ENABLE_EVENTS_TABLE_FLAGS: z
       .enum(["true", "false"])
       .default("false"),
+
+    // v2 APIs (events table based) - disabled by default for self-hosters
+    LANGFUSE_ENABLE_EVENTS_TABLE_V2_APIS: z
+      .enum(["true", "false"])
+      .default("false"),
+
+    LANGFUSE_ENABLE_QUERY_OPTIMIZATION_SHADOW_TEST: z
+      .enum(["true", "false"])
+      .default("false"),
+
+    // Blocked users for chat completion API (userId:reason format)
+    LANGFUSE_BLOCKED_USERIDS_CHATCOMPLETION: z
+      .string()
+      .optional()
+      .transform((val) => {
+        if (!val) return new Map();
+        const map = new Map();
+        for (const part of val.split(",")) {
+          const [userId, ...noteParts] = part.split(":");
+          if (userId?.trim()) {
+            map.set(userId.trim(), noteParts.join(":").trim() || "blocked");
+          }
+        }
+        return map;
+      }),
   },
 
   /**
@@ -364,7 +410,6 @@ export const env = createEnv({
     NEXT_PUBLIC_DEMO_PROJECT_ID: z.string().optional(),
     NEXT_PUBLIC_DEMO_ORG_ID: z.string().optional(),
     NEXT_PUBLIC_SIGN_UP_DISABLED: z.enum(["true", "false"]).default("false"),
-    NEXT_PUBLIC_TURNSTILE_SITE_KEY: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_HOST: z.string().optional(),
     NEXT_PUBLIC_PLAIN_APP_ID: z.string().optional(),
@@ -502,6 +547,7 @@ export const env = createEnv({
     AUTH_KEYCLOAK_CHECKS: process.env.AUTH_KEYCLOAK_CHECKS,
     AUTH_KEYCLOAK_SCOPE: process.env.AUTH_KEYCLOAK_SCOPE,
     AUTH_KEYCLOAK_ID_TOKEN: process.env.AUTH_KEYCLOAK_ID_TOKEN,
+    AUTH_KEYCLOAK_NAME: process.env.AUTH_KEYCLOAK_NAME,
     AUTH_JUMPCLOUD_CLIENT_ID: process.env.AUTH_JUMPCLOUD_CLIENT_ID,
     AUTH_JUMPCLOUD_CLIENT_SECRET: process.env.AUTH_JUMPCLOUD_CLIENT_SECRET,
     AUTH_JUMPCLOUD_ISSUER: process.env.AUTH_JUMPCLOUD_ISSUER,
@@ -574,8 +620,6 @@ export const env = createEnv({
     LANGFUSE_S3_MEDIA_UPLOAD_SSE_KMS_KEY_ID:
       process.env.LANGFUSE_S3_MEDIA_UPLOAD_SSE_KMS_KEY_ID,
     // Worker
-    TURNSTILE_SECRET_KEY: process.env.TURNSTILE_SECRET_KEY,
-    NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
     NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
     // Other
@@ -590,6 +634,8 @@ export const env = createEnv({
     CLICKHOUSE_USER: process.env.CLICKHOUSE_USER,
     CLICKHOUSE_PASSWORD: process.env.CLICKHOUSE_PASSWORD,
     CLICKHOUSE_CLUSTER_ENABLED: process.env.CLICKHOUSE_CLUSTER_ENABLED,
+    CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY:
+      process.env.CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY,
     // EE ui customization
     LANGFUSE_UI_API_HOST: process.env.LANGFUSE_UI_API_HOST,
     LANGFUSE_UI_DOCUMENTATION_HREF: process.env.LANGFUSE_UI_DOCUMENTATION_HREF,
@@ -628,9 +674,6 @@ export const env = createEnv({
     STRIPE_WEBHOOK_SIGNING_SECRET: process.env.STRIPE_WEBHOOK_SIGNING_SECRET,
     SENTRY_AUTH_TOKEN: process.env.SENTRY_AUTH_TOKEN,
     SENTRY_CSP_REPORT_URI: process.env.SENTRY_CSP_REPORT_URI,
-    BETTERSTACK_UPTIME_API_KEY: process.env.BETTERSTACK_UPTIME_API_KEY,
-    BETTERSTACK_UPTIME_STATUS_PAGE_ID:
-      process.env.BETTERSTACK_UPTIME_STATUS_PAGE_ID,
     LANGFUSE_RATE_LIMITS_ENABLED: process.env.LANGFUSE_RATE_LIMITS_ENABLED,
     // provisioning
     LANGFUSE_INIT_ORG_ID: process.env.LANGFUSE_INIT_ORG_ID,
@@ -663,8 +706,8 @@ export const env = createEnv({
     // Api Performance Flags
     LANGFUSE_API_CLICKHOUSE_PROPAGATE_OBSERVATIONS_TIME_BOUNDS:
       process.env.LANGFUSE_API_CLICKHOUSE_PROPAGATE_OBSERVATIONS_TIME_BOUNDS,
-    LANGFUSE_API_CLICKHOUSE_DISABLE_OBSERVATIONS_FINAL:
-      process.env.LANGFUSE_API_CLICKHOUSE_DISABLE_OBSERVATIONS_FINAL,
+    LANGFUSE_SKIP_FINAL_FOR_OTEL_PROJECTS:
+      process.env.LANGFUSE_SKIP_FINAL_FOR_OTEL_PROJECTS,
 
     // Natural Language Filters
     LANGFUSE_AI_FEATURES_PUBLIC_KEY:
@@ -678,6 +721,12 @@ export const env = createEnv({
       process.env.LANGFUSE_ENABLE_EVENTS_TABLE_OBSERVATIONS,
     LANGFUSE_ENABLE_EVENTS_TABLE_FLAGS:
       process.env.LANGFUSE_ENABLE_EVENTS_TABLE_FLAGS,
+    LANGFUSE_ENABLE_EVENTS_TABLE_V2_APIS:
+      process.env.LANGFUSE_ENABLE_EVENTS_TABLE_V2_APIS,
+    LANGFUSE_ENABLE_QUERY_OPTIMIZATION_SHADOW_TEST:
+      process.env.LANGFUSE_ENABLE_QUERY_OPTIMIZATION_SHADOW_TEST,
+    LANGFUSE_BLOCKED_USERIDS_CHATCOMPLETION:
+      process.env.LANGFUSE_BLOCKED_USERIDS_CHATCOMPLETION,
   },
   // Skip validation in Docker builds
   // DOCKER_BUILD is set in Dockerfile

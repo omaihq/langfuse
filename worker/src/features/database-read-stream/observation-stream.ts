@@ -1,6 +1,7 @@
 import {
   FilterCondition,
-  ScoreDataType,
+  ScoreDataTypeEnum,
+  type ScoreDataTypeType,
   TimeFilter,
   TracingSearchType,
 } from "@langfuse/shared";
@@ -8,7 +9,6 @@ import {
   getDistinctScoreNames,
   queryClickhouseStream,
   logger,
-  convertObservation,
   ObservationRecordReadType,
   StringFilter,
   FilterList,
@@ -16,6 +16,8 @@ import {
   observationsTableUiColumnDefinitions,
   enrichObservationWithModelData,
   clickhouseSearchCondition,
+  convertObservation,
+  shouldSkipObservationsFinal,
 } from "@langfuse/shared/src/server";
 import { prisma } from "@langfuse/shared/src/db";
 import { Readable } from "stream";
@@ -88,9 +90,19 @@ export const getObservationStream = async (props: {
     searchType,
     rowLimit = env.BATCH_EXPORT_ROW_LIMIT,
   } = props;
+
+  // Check if we should skip deduplication for OTEL projects
+  const skipDedup = await shouldSkipObservationsFinal(projectId);
+
   const clickhouseConfigs = {
-    request_timeout: 120_000,
-    join_algorithm: "partial_merge",
+    request_timeout: 180_000, // 3 minutes
+    clickhouse_settings: {
+      join_algorithm: "partial_merge" as const,
+      // Increase HTTP timeouts to prevent Code 209 errors during slow blob storage uploads
+      // See: https://github.com/ClickHouse/ClickHouse/issues/64731
+      http_send_timeout: 300,
+      http_receive_timeout: 300,
+    },
   };
 
   // Filter out trace-level filters since we don't join the traces table for filtering
@@ -154,7 +166,7 @@ export const getObservationStream = async (props: {
   const search = clickhouseSearchCondition(searchQuery, searchType, "o");
 
   const query = `
-   
+
       WITH scores_agg AS (
         SELECT
           trace_id,
@@ -227,7 +239,7 @@ export const getObservationStream = async (props: {
         if(isNull(completion_start_time), NULL,  date_diff('millisecond', start_time, completion_start_time)) as "time_to_first_token",
         o.input as input,
         o.output as output,
-        o.metadata as metadata, 
+        o.metadata as metadata,
         t.name as traceName,
         t.tags as traceTags,
         t.timestamp as traceTimestamp,
@@ -239,7 +251,7 @@ export const getObservationStream = async (props: {
         LEFT JOIN scores_agg s ON s.trace_id = o.trace_id AND s.observation_id = o.id
       WHERE ${appliedObservationsFilter.query}
         ${search.query}
-      LIMIT 1 BY o.id, o.project_id
+      ${skipDedup ? "" : "LIMIT 1 BY o.id, o.project_id"}
       limit {rowLimit: Int64}
   `;
 
@@ -249,7 +261,7 @@ export const getObservationStream = async (props: {
         | {
             name: string;
             value: number;
-            dataType: ScoreDataType;
+            dataType: ScoreDataTypeType;
             stringValue: string;
           }[]
         | undefined;
@@ -290,7 +302,7 @@ export const getObservationStream = async (props: {
       | {
           name: string;
           value: number;
-          dataType: ScoreDataType;
+          dataType: ScoreDataTypeType;
           stringValue: string;
         }[]
       | undefined;
@@ -325,7 +337,7 @@ export const getObservationStream = async (props: {
         return {
           name,
           value: null,
-          dataType: "CATEGORICAL" as ScoreDataType,
+          dataType: ScoreDataTypeEnum.CATEGORICAL,
           stringValue: valueParts.join(":"),
         };
       },
@@ -348,6 +360,8 @@ export const getObservationStream = async (props: {
           traceTags: bufferedRow.traceTags,
           traceTimestamp: bufferedRow.traceTimestamp,
           userId: bufferedRow.userId,
+          toolDefinitionsCount: null,
+          toolCallsCount: null,
           ...modelData,
           scores: outputScores,
           comments: observationComments,
@@ -358,7 +372,8 @@ export const getObservationStream = async (props: {
   };
 
   // Convert async generator to Node.js Readable stream
-  // eslint-disable-next-line no-unused-vars
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Counter for potential future instrumentation
   let recordsProcessed = 0;
 
   return Readable.from(
