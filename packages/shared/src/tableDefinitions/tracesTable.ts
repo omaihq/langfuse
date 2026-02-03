@@ -184,6 +184,18 @@ export const tracesTableCols: ColumnDefinition[] = [
     internal: '"calculatedTotalCost"',
     nullable: true,
   },
+  {
+    name: "Comment Count",
+    id: "commentCount",
+    type: "number",
+    internal: "", // handled by comment filter helpers
+  },
+  {
+    name: "Comment Content",
+    id: "commentContent",
+    type: "string",
+    internal: "", // handled by comment filter helpers
+  },
 ];
 
 export const datasetCol: ColumnDefinition = {
@@ -199,6 +211,7 @@ export const datasetOnlyCols: ColumnDefinition[] = [datasetCol];
 
 export const evalTraceTableCols: ColumnDefinition[] = tracesOnlyCols;
 export const evalDatasetFormFilterCols: ColumnDefinition[] = datasetOnlyCols;
+
 export type TraceOptions = {
   scores_avg?: Array<string>;
   score_categories?: Array<MultiValueOption>;

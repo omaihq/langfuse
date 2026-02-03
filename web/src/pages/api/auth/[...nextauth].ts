@@ -48,5 +48,6 @@ export default async function auth(req: NextApiRequest, res: NextApiResponse) {
   );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
+
   return await NextAuth(req, res, authOptions);
 }

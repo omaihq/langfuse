@@ -1,4 +1,4 @@
-import { expect, it, describe, beforeAll } from "vitest";
+import { expect, it, describe, beforeAll, beforeEach, afterEach } from "vitest";
 import { env } from "../env";
 import { randomUUID } from "crypto";
 import {
@@ -21,9 +21,16 @@ import {
 } from "@langfuse/shared";
 import { encrypt } from "@langfuse/shared/encryption";
 
+// Skip tests that use Azurite in Azure mode due to known Azurite limitations
+// with multipart uploads. These tests use MinIO explicitly or are skipped.
+// Unfortunately, this is necessary as we don't have a good way to skip empty file uploads
+// and at least azurite doesn't handle them gracefully.
+const maybeIt = env.LANGFUSE_USE_AZURE_BLOB === "true" ? it.skip : it;
+
 describe("BlobStorageIntegrationProcessingJob", () => {
   let storageService: StorageService;
   let s3StorageService: StorageService;
+  let s3Prefix: string | null = null;
   const bucketName = env.LANGFUSE_S3_EVENT_UPLOAD_BUCKET || "";
   const accessKeyId = env.LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID || "";
   const secretAccessKey = env.LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY || "";
@@ -53,8 +60,21 @@ describe("BlobStorageIntegrationProcessingJob", () => {
     });
   });
 
+  afterEach(async () => {
+    // Clean up all files created during this test
+    if (!s3Prefix) return;
+
+    const files = await s3StorageService.listFiles(s3Prefix);
+
+    if (files.length == 0) return;
+
+    await s3StorageService.deleteFiles(files.map((f) => f.file));
+    s3Prefix = null;
+  });
+
   it("should not process when blob storage integration is disabled", async () => {
     const { projectId } = await createOrgProjectAndApiKey();
+    s3Prefix = projectId;
 
     // Setup an integration but disabled
     await prisma.blobStorageIntegration.create({
@@ -62,7 +82,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
         projectId,
         type: BlobStorageIntegrationType.S3,
         bucketName,
-        prefix: "",
+        prefix: s3Prefix,
         accessKeyId,
         secretAccessKey: encrypt(secretAccessKey),
         region: region ? region : "auto",
@@ -80,13 +100,14 @@ describe("BlobStorageIntegrationProcessingJob", () => {
     } as Job);
 
     // Then
-    const files = await storageService.listFiles("");
+    const files = await storageService.listFiles(s3Prefix);
     expect(files.filter((f) => f.file.includes(projectId))).toHaveLength(0);
   });
 
   it("should export traces, generations, and scores to S3", async () => {
     // Setup
     const { projectId } = await createOrgProjectAndApiKey();
+    s3Prefix = projectId;
     const now = new Date();
     // Set lastSyncAt to 2 hours ago so the chunked export (1 hour window) covers recent data
     const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
@@ -97,7 +118,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
         projectId,
         type: BlobStorageIntegrationType.S3,
         bucketName,
-        prefix: "",
+        prefix: s3Prefix,
         accessKeyId: minioAccessKeyId,
         secretAccessKey: encrypt(minioAccessKeySecret),
         region: region ? region : "auto",
@@ -155,7 +176,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
     } as Job);
 
     // Then
-    const files = await s3StorageService.listFiles("");
+    const files = await s3StorageService.listFiles(s3Prefix);
     const projectFiles = files.filter((f) => f.file.includes(projectId));
 
     // Should have 3 files (traces, observations, scores)
@@ -275,7 +296,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
   it("should use prefix in file path when specified", async () => {
     // Setup
     const { projectId } = await createOrgProjectAndApiKey();
-    const prefix = "test-prefix";
+    s3Prefix = "test-prefix";
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
@@ -284,7 +305,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
         projectId,
         type: BlobStorageIntegrationType.S3,
         bucketName,
-        prefix,
+        prefix: s3Prefix,
         accessKeyId: minioAccessKeyId,
         secretAccessKey: encrypt(minioAccessKeySecret),
         region: region ? region : "auto",
@@ -313,16 +334,17 @@ describe("BlobStorageIntegrationProcessingJob", () => {
     } as Job);
 
     // Then
-    const files = await storageService.listFiles("");
+    const files = await storageService.listFiles(s3Prefix);
     const projectFiles = files.filter((f) => f.file.includes(projectId));
 
     // All files should have the prefix
-    expect(projectFiles.every((f) => f.file.startsWith(prefix))).toBe(true);
+    expect(projectFiles.every((f) => f.file.startsWith(s3Prefix))).toBe(true);
   });
 
   it("should handle CSV, JSON, and JSONL file types correctly", async () => {
     // Setup
     const { projectId } = await createOrgProjectAndApiKey();
+    s3Prefix = `${projectId}/`;
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
@@ -367,11 +389,14 @@ describe("BlobStorageIntegrationProcessingJob", () => {
       BlobStorageIntegrationFileType.JSON,
       BlobStorageIntegrationFileType.JSONL,
     ]) {
+      const fileTypePrefix = `${fileType.toLowerCase()}-test/`;
+      const prefix = `${s3Prefix}${fileTypePrefix}`;
+
       // Create integration with specific file type
       await prisma.blobStorageIntegration.upsert({
         where: { projectId },
         update: {
-          prefix: `${fileType.toLowerCase()}-test/`,
+          prefix,
           fileType,
           lastSyncAt: oneHourAgo,
         },
@@ -379,7 +404,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
           projectId,
           type: BlobStorageIntegrationType.S3,
           bucketName,
-          prefix: `${fileType.toLowerCase()}-test/`,
+          prefix,
           accessKeyId: minioAccessKeyId,
           secretAccessKey: encrypt(minioAccessKeySecret),
           region: region ? region : "auto",
@@ -399,11 +424,9 @@ describe("BlobStorageIntegrationProcessingJob", () => {
       } as Job);
 
       // Get files for this file type
-      const files = await s3StorageService.listFiles("");
+      const files = await s3StorageService.listFiles(prefix);
       const projectFiles = files.filter(
-        (f) =>
-          f.file.includes(projectId) &&
-          f.file.includes(`${fileType.toLowerCase()}-test/`),
+        (f) => f.file.includes(projectId) && f.file.includes(fileTypePrefix),
       );
 
       // Should have 3 files (traces, observations, scores)
@@ -457,78 +480,82 @@ describe("BlobStorageIntegrationProcessingJob", () => {
   });
 
   describe("BlobStorageExportMode minTimestamp behavior", () => {
-    it("should export old data for FULL_HISTORY mode when data exists", async () => {
-      const { projectId } = await createOrgProjectAndApiKey();
+    maybeIt(
+      "should export old data for FULL_HISTORY mode when data exists",
+      async () => {
+        const { projectId } = await createOrgProjectAndApiKey();
+        s3Prefix = projectId;
 
-      // Create trace with old timestamp that's far enough in the past
-      // but not so old that it might not be found by ClickHouse
-      const now = new Date();
-      const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
-      const oldTrace = createTrace({
-        project_id: projectId,
-        timestamp: twoDaysAgo.getTime(),
-        name: "Old Trace",
-      });
-      await createTracesCh([oldTrace]);
+        // Create trace with old timestamp that's far enough in the past
+        // but not so old that it might not be found by ClickHouse
+        const now = new Date();
+        const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+        const oldTrace = createTrace({
+          project_id: projectId,
+          timestamp: twoDaysAgo.getTime(),
+          name: "Old Trace",
+        });
+        await createTracesCh([oldTrace]);
 
-      // Create integration with FULL_HISTORY mode and no lastSyncAt
-      await prisma.blobStorageIntegration.create({
-        data: {
-          projectId,
-          type: BlobStorageIntegrationType.S3,
-          bucketName,
-          prefix: `${projectId}/test-full-history/`,
-          accessKeyId,
-          secretAccessKey: encrypt(secretAccessKey),
-          region: region ? region : "auto",
-          endpoint: endpoint ? endpoint : null,
-          forcePathStyle:
-            env.LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE === "true",
-          enabled: true,
-          exportFrequency: "hourly",
-          exportMode: "FULL_HISTORY",
-          exportStartDate: null,
-          lastSyncAt: null, // First export
-        },
-      });
+        // Create integration with FULL_HISTORY mode and no lastSyncAt
+        await prisma.blobStorageIntegration.create({
+          data: {
+            projectId,
+            type: BlobStorageIntegrationType.S3,
+            bucketName,
+            prefix: s3Prefix,
+            accessKeyId,
+            secretAccessKey: encrypt(secretAccessKey),
+            region: region ? region : "auto",
+            endpoint: endpoint ? endpoint : null,
+            forcePathStyle:
+              env.LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE === "true",
+            enabled: true,
+            exportFrequency: "hourly",
+            exportMode: "FULL_HISTORY",
+            exportStartDate: null,
+            lastSyncAt: null, // First export
+          },
+        });
 
-      await handleBlobStorageIntegrationProjectJob({
-        data: { payload: { projectId } },
-      } as Job);
+        await handleBlobStorageIntegrationProjectJob({
+          data: { payload: { projectId } },
+        } as Job);
 
-      // If data was found and exported, check the files
-      const files = await storageService.listFiles(
-        `${projectId}/test-full-history/`,
-      );
-      const projectFiles = files.filter((f) => f.file.includes(projectId));
+        // If data was found and exported, check the files
+        const files = await storageService.listFiles(s3Prefix);
+        const projectFiles = files.filter((f) => f.file.includes(projectId));
 
-      // With FULL_HISTORY mode, if the ClickHouse query finds the old data,
-      // it should export starting from that timestamp
-      if (projectFiles.length > 0) {
-        const traceFile = projectFiles.find((f) => f.file.includes("/traces/"));
-        expect(traceFile).toBeDefined();
+        // With FULL_HISTORY mode, if the ClickHouse query finds the old data,
+        // it should export starting from that timestamp
+        if (projectFiles.length > 0) {
+          const traceFile = projectFiles.find((f) =>
+            f.file.includes("/traces/"),
+          );
+          expect(traceFile).toBeDefined();
 
-        if (traceFile) {
-          const content = await storageService.download(traceFile.file);
-          expect(content).toContain(oldTrace.id);
+          if (traceFile) {
+            const content = await storageService.download(traceFile.file);
+            expect(content).toContain(oldTrace.id);
+          }
         }
-      }
 
-      // Verify integration was updated if export happened
-      const updatedIntegration = await prisma.blobStorageIntegration.findUnique(
-        {
-          where: { projectId },
-        },
-      );
+        // Verify integration was updated if export happened
+        const updatedIntegration =
+          await prisma.blobStorageIntegration.findUnique({
+            where: { projectId },
+          });
 
-      // If files were exported, lastSyncAt should be set
-      if (projectFiles.length > 0) {
-        expect(updatedIntegration?.lastSyncAt).toBeDefined();
-      }
-    });
+        // If files were exported, lastSyncAt should be set
+        if (projectFiles.length > 0) {
+          expect(updatedIntegration?.lastSyncAt).toBeDefined();
+        }
+      },
+    );
 
     it("should use current date for FROM_TODAY mode on first export", async () => {
       const { projectId } = await createOrgProjectAndApiKey();
+      s3Prefix = projectId;
       const now = new Date();
       const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
       const veryOldTrace = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
@@ -552,7 +579,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
           projectId,
           type: BlobStorageIntegrationType.S3,
           bucketName,
-          prefix: `${projectId}/test-today/`,
+          prefix: s3Prefix,
           accessKeyId,
           secretAccessKey: encrypt(secretAccessKey),
           region: region ? region : "auto",
@@ -571,7 +598,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
         data: { payload: { projectId } },
       } as Job);
 
-      const files = await storageService.listFiles(`${projectId}/test-today/`);
+      const files = await storageService.listFiles(s3Prefix);
       const projectFiles = files.filter((f) => f.file.includes(projectId));
       const traceFile = projectFiles.find((f) => f.file.includes("/traces/"));
 
@@ -588,6 +615,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
 
     it("should use custom date for FROM_CUSTOM_DATE mode on first export", async () => {
       const { projectId } = await createOrgProjectAndApiKey();
+      s3Prefix = projectId;
       const now = new Date();
       const customDate = new Date(now.getTime() - 12 * 60 * 60 * 1000); // 12 hours ago
       const beforeCustomDate = new Date(customDate.getTime() - 60 * 60 * 1000); // 13 hours ago
@@ -614,7 +642,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
           projectId,
           type: BlobStorageIntegrationType.S3,
           bucketName,
-          prefix: `${projectId}/test-custom/`,
+          prefix: s3Prefix,
           accessKeyId: minioAccessKeyId,
           secretAccessKey: encrypt(minioAccessKeySecret),
           region: region ? region : "auto",
@@ -633,9 +661,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
         data: { payload: { projectId } },
       } as Job);
 
-      const files = await s3StorageService.listFiles(
-        `${projectId}/test-custom/`,
-      );
+      const files = await s3StorageService.listFiles(s3Prefix);
       const projectFiles = files.filter((f) => f.file.includes(projectId));
       const traceFile = projectFiles.find((f) => f.file.includes("/traces/"));
 
@@ -651,84 +677,86 @@ describe("BlobStorageIntegrationProcessingJob", () => {
   });
 
   describe("Chunked historic exports", () => {
-    it("should cap maxTimestamp to one frequency period ahead for FULL_HISTORY mode", async () => {
-      const { projectId } = await createOrgProjectAndApiKey();
-      const now = new Date();
-      const veryOldTimestamp = new Date(
-        now.getTime() - 7 * 24 * 60 * 60 * 1000,
-      ); // 7 days ago
+    maybeIt(
+      "should cap maxTimestamp to one frequency period ahead for FULL_HISTORY mode",
+      async () => {
+        const { projectId } = await createOrgProjectAndApiKey();
+        s3Prefix = projectId;
+        const now = new Date();
+        const veryOldTimestamp = new Date(
+          now.getTime() - 7 * 24 * 60 * 60 * 1000,
+        ); // 7 days ago
 
-      // Create trace from 7 days ago
-      const oldTrace = createTrace({
-        project_id: projectId,
-        timestamp: veryOldTimestamp.getTime(),
-        name: "Old Trace",
-      });
-      await createTracesCh([oldTrace]);
+        // Create trace from 7 days ago
+        const oldTrace = createTrace({
+          project_id: projectId,
+          timestamp: veryOldTimestamp.getTime(),
+          name: "Old Trace",
+        });
+        await createTracesCh([oldTrace]);
 
-      // Create integration with FULL_HISTORY and hourly frequency (first export)
-      await prisma.blobStorageIntegration.create({
-        data: {
-          projectId,
-          type: BlobStorageIntegrationType.S3,
-          bucketName,
-          prefix: `${projectId}/test-chunking/`,
-          accessKeyId,
-          secretAccessKey: encrypt(secretAccessKey),
-          region: region ? region : "auto",
-          endpoint: endpoint ? endpoint : null,
-          forcePathStyle:
-            env.LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE === "true",
-          enabled: true,
-          exportFrequency: "hourly",
-          exportMode: "FULL_HISTORY",
-          exportStartDate: null,
-          lastSyncAt: null,
-        },
-      });
+        // Create integration with FULL_HISTORY and hourly frequency (first export)
+        await prisma.blobStorageIntegration.create({
+          data: {
+            projectId,
+            type: BlobStorageIntegrationType.S3,
+            bucketName,
+            prefix: s3Prefix,
+            accessKeyId,
+            secretAccessKey: encrypt(secretAccessKey),
+            region: region ? region : "auto",
+            endpoint: endpoint ? endpoint : null,
+            forcePathStyle:
+              env.LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE === "true",
+            enabled: true,
+            exportFrequency: "hourly",
+            exportMode: "FULL_HISTORY",
+            exportStartDate: null,
+            lastSyncAt: null,
+          },
+        });
 
-      // When
-      await handleBlobStorageIntegrationProjectJob({
-        data: { payload: { projectId } },
-      } as Job);
+        // When
+        await handleBlobStorageIntegrationProjectJob({
+          data: { payload: { projectId } },
+        } as Job);
 
-      // Then
-      const updatedIntegration = await prisma.blobStorageIntegration.findUnique(
-        {
-          where: { projectId },
-        },
-      );
+        // Then
+        const updatedIntegration =
+          await prisma.blobStorageIntegration.findUnique({
+            where: { projectId },
+          });
 
-      expect(updatedIntegration).toBeDefined();
+        expect(updatedIntegration).toBeDefined();
 
-      // Check if files were exported (meaning data was found)
-      const files = await storageService.listFiles(
-        `${projectId}/test-chunking/`,
-      );
-      const projectFiles = files.filter((f) => f.file.includes(projectId));
+        // Check if files were exported (meaning data was found)
+        const files = await storageService.listFiles(s3Prefix);
+        const projectFiles = files.filter((f) => f.file.includes(projectId));
 
-      // If data was found and exported, verify chunking behavior
-      if (projectFiles.length > 0 && updatedIntegration?.lastSyncAt) {
-        // When ClickHouse finds the old data, it should start from that timestamp
-        // and cap the export to 1 hour (frequency interval)
-        // lastSyncAt should be capped to 1 hour after the found timestamp
-        const minExpectedTime = veryOldTimestamp.getTime();
-        const maxExpectedTime = veryOldTimestamp.getTime() + 60 * 60 * 1000; // +1 hour
-        const tolerance = 2000; // 2 second tolerance
+        // If data was found and exported, verify chunking behavior
+        if (projectFiles.length > 0 && updatedIntegration?.lastSyncAt) {
+          // When ClickHouse finds the old data, it should start from that timestamp
+          // and cap the export to 1 hour (frequency interval)
+          // lastSyncAt should be capped to 1 hour after the found timestamp
+          const minExpectedTime = veryOldTimestamp.getTime();
+          const maxExpectedTime = veryOldTimestamp.getTime() + 60 * 60 * 1000; // +1 hour
+          const tolerance = 2000; // 2 second tolerance
 
-        expect(updatedIntegration.lastSyncAt.getTime()).toBeGreaterThanOrEqual(
-          minExpectedTime,
-        );
-        expect(updatedIntegration.lastSyncAt.getTime()).toBeLessThanOrEqual(
-          maxExpectedTime + tolerance,
-        );
-      }
-      // If no data was found (fallback to current time), the time window would be invalid
-      // and no export would happen, which is acceptable behavior
-    });
+          expect(
+            updatedIntegration.lastSyncAt.getTime(),
+          ).toBeGreaterThanOrEqual(minExpectedTime);
+          expect(updatedIntegration.lastSyncAt.getTime()).toBeLessThanOrEqual(
+            maxExpectedTime + tolerance,
+          );
+        }
+        // If no data was found (fallback to current time), the time window would be invalid
+        // and no export would happen, which is acceptable behavior
+      },
+    );
 
     it("should immediately schedule next chunk when in catch-up mode", async () => {
       const { projectId } = await createOrgProjectAndApiKey();
+      s3Prefix = projectId;
       const now = new Date();
       const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
 
@@ -751,7 +779,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
           projectId,
           type: BlobStorageIntegrationType.S3,
           bucketName,
-          prefix: `${projectId}/test-catchup/`,
+          prefix: s3Prefix,
           accessKeyId: minioAccessKeyId,
           secretAccessKey: encrypt(minioAccessKeySecret),
           region: region ? region : "auto",
@@ -790,6 +818,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
 
     it("should schedule normally when caught up", async () => {
       const { projectId } = await createOrgProjectAndApiKey();
+      s3Prefix = projectId;
       const now = new Date();
       const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
@@ -807,7 +836,7 @@ describe("BlobStorageIntegrationProcessingJob", () => {
           projectId,
           type: BlobStorageIntegrationType.S3,
           bucketName,
-          prefix: `${projectId}/test-caught-up/`,
+          prefix: s3Prefix,
           accessKeyId: minioAccessKeyId,
           secretAccessKey: encrypt(minioAccessKeySecret),
           region: region ? region : "auto",

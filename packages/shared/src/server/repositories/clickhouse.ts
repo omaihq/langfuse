@@ -42,8 +42,7 @@ type ErrorType = keyof typeof ERROR_TYPE_CONFIG;
 
 export class ClickHouseResourceError extends Error {
   static ERROR_ADVICE_MESSAGE = [
-    "Database resource limit exceeded.",
-    "Please use more specific filters or a shorter time range.",
+    "We got notified about this issue and are looking into it.",
     "We are continuously improving our API performance.",
   ].join(" ");
 
@@ -104,7 +103,7 @@ export async function upsertClickhouse<
 >(opts: {
   table: "scores" | "traces" | "observations" | "traces_null";
   records: T[];
-  eventBodyMapper: (body: T) => Record<string, unknown>; // eslint-disable-line no-unused-vars
+  eventBodyMapper: (body: T) => Record<string, unknown>;
   tags?: Record<string, string>;
 }): Promise<void> {
   return await instrumentAsync(
@@ -311,6 +310,10 @@ function handleExceptionRow<T>(parsedRow: T): T {
   ) {
     const potentialException = (parsedRow as { exception: string }).exception;
     if (potentialException.match(/^Code: (\d+)/)) {
+      logger.error(
+        `[clickhouse] Exception row detected: ${potentialException}`,
+        parsedRow,
+      );
       throw new Error(potentialException);
     }
   }
@@ -318,7 +321,7 @@ function handleExceptionRow<T>(parsedRow: T): T {
 }
 
 /**
- * Determines if an error is retryable (socket hang up, connection reset, etc.)
+ * Determines if an error is retryable (socket hang up, connection reset, broken pipe, etc.)
  */
 function isRetryableError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -326,7 +329,17 @@ function isRetryableError(error: unknown): boolean {
   const errorMessage = (error as Error).message?.toLowerCase() || "";
 
   // Check for socket hang up and other network-related errors
-  return errorMessage.includes("socket hang up");
+  const retryablePatterns = [
+    "socket hang up",
+    "broken pipe",
+    "connection reset",
+    "econnreset",
+    "network_error",
+    "etimedout",
+    "econnrefused",
+  ];
+
+  return retryablePatterns.some((pattern) => errorMessage.includes(pattern));
 }
 
 export async function queryClickhouse<T>(opts: {
@@ -436,6 +449,7 @@ export async function commandClickhouse(opts: {
   clickhouseConfigs?: NodeClickHouseClientConfigOptions;
   tags?: Record<string, string>;
   clickhouseSettings?: ClickHouseSettings;
+  abortSignal?: AbortSignal;
 }): Promise<void> {
   return await instrumentAsync(
     { name: "clickhouse-command", spanKind: SpanKind.CLIENT },
@@ -449,6 +463,10 @@ export async function commandClickhouse(opts: {
       const res = await clickhouseClient(opts.clickhouseConfigs).command({
         query: opts.query,
         query_params: opts.params,
+        ...(opts.tags?.queryId
+          ? { query_id: opts.tags.queryId as string }
+          : {}),
+        ...(opts.abortSignal ? { abort_signal: opts.abortSignal } : {}),
         clickhouse_settings: {
           ...opts.clickhouseSettings,
           log_comment: JSON.stringify(opts.tags ?? {}),

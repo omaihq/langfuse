@@ -1,4 +1,3 @@
-import { api } from "@/src/utils/api";
 import { DataTable } from "@/src/components/table/data-table";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import {
@@ -22,9 +21,8 @@ import {
   BatchExportTableName,
   type ObservationType,
   TableViewPresetTableName,
-  AnnotationQueueObjectType,
   BatchActionType,
-  type TimeFilter,
+  ActionId,
 } from "@langfuse/shared";
 import { cn } from "@/src/utils/tailwind";
 import { LevelColors } from "@/src/components/level-colors";
@@ -37,9 +35,9 @@ import { type ScoreAggregate } from "@langfuse/shared";
 import TagList from "@/src/features/tag/components/TagList";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import { BatchExportTableButton } from "@/src/components/BatchExportTableButton";
-import { BreakdownTooltip } from "@/src/components/trace/BreakdownToolTip";
+import { BreakdownTooltip } from "@/src/components/trace2/components/_shared/BreakdownToolTip";
 import { InfoIcon, PlusCircle } from "lucide-react";
-import { UpsertModelFormDrawer } from "@/src/features/models/components/UpsertModelFormDrawer";
+import { UpsertModelFormDialog } from "@/src/features/models/components/UpsertModelFormDialog";
 import { LocalIsoDate } from "@/src/components/LocalIsoDate";
 import { Badge } from "@/src/components/ui/badge";
 import { type Row, type RowSelectionState } from "@tanstack/react-table";
@@ -54,7 +52,6 @@ import { useRouter } from "next/router";
 import { useFullTextSearch } from "@/src/components/table/use-cases/useFullTextSearch";
 import { TableSelectionManager } from "@/src/features/table/components/TableSelectionManager";
 import { useSelectAll } from "@/src/features/table/hooks/useSelectAll";
-import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
 import { TableActionMenu } from "@/src/features/table/components/TableActionMenu";
 import { type TableAction } from "@/src/features/table/types";
 import { type DataTablePeekViewProps } from "@/src/components/table/peek";
@@ -62,6 +59,17 @@ import { useScoreColumns } from "@/src/features/scores/hooks/useScoreColumns";
 import { scoreFilters } from "@/src/features/scores/lib/scoreColumns";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { MemoizedIOTableCell } from "@/src/components/ui/IOTableCell";
+import { useEventsTableData } from "@/src/features/events/hooks/useEventsTableData";
+import { useEventsFilterOptions } from "@/src/features/events/hooks/useEventsFilterOptions";
+import { useEventsViewMode } from "@/src/features/events/hooks/useEventsViewMode";
+import { EventsViewModeToggle } from "@/src/features/events/components/EventsViewModeToggle";
+import { JsonSkeleton } from "@/src/components/ui/CodeJsonViewer";
+import {
+  type RefreshInterval,
+  REFRESH_INTERVALS,
+} from "@/src/components/table/data-table-refresh-button";
+import useSessionStorage from "@/src/components/useSessionStorage";
+import { api } from "@/src/utils/api";
 
 export type EventsTableRow = {
   // Identity fields
@@ -111,6 +119,7 @@ export type EventsTableRow = {
     outputCost?: number;
   };
   costDetails: Record<string, number>;
+  usagePricingTierName?: string | null;
 
   // Performance metrics
   latency?: number;
@@ -129,10 +138,12 @@ export type EventsTableRow = {
 
 export type EventsTableProps = {
   projectId: string;
+  userId?: string;
 };
 
 export default function ObservationsEventsTable({
   projectId,
+  userId,
 }: EventsTableProps) {
   const router = useRouter();
   const { viewId } = router.query;
@@ -186,10 +197,71 @@ export default function ObservationsEventsTable({
 
   const { timeRange, setTimeRange } = useTableDateRange(projectId);
 
+  // View mode toggle (Trace vs Observation)
+  const { viewMode, setViewMode: setViewModeRaw } =
+    useEventsViewMode(projectId);
+
+  // For filter options: trace mode filters to root items, observation mode shows all
+  const hasParentObservation = viewMode === "observation" ? undefined : false;
+
+  // Wrap setViewMode to reset pagination when view mode changes
+  const setViewMode = useCallback(
+    (mode: typeof viewMode) => {
+      setViewModeRaw(mode);
+      setPaginationState({ page: 1 });
+    },
+    [setViewModeRaw, setPaginationState],
+  );
+
+  // for auto data refresh
+  const utils = api.useUtils();
+  const [rawRefreshInterval, setRawRefreshInterval] =
+    useSessionStorage<RefreshInterval>(
+      `tableRefreshInterval-events-${projectId}`,
+      null,
+    );
+
+  // Validate session storage value against allowed intervals
+  const allowedValues = REFRESH_INTERVALS.map((i) => i.value);
+  const refreshInterval = allowedValues.includes(rawRefreshInterval)
+    ? rawRefreshInterval
+    : null;
+  const setRefreshInterval = useCallback(
+    (value: RefreshInterval) => {
+      if (allowedValues.includes(value)) {
+        setRawRefreshInterval(value);
+      }
+    },
+    [allowedValues, setRawRefreshInterval],
+  );
+
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Auto-increment refresh tick to force date range recalculation
+  useEffect(() => {
+    if (!refreshInterval) return;
+    const id = setInterval(() => {
+      setRefreshTick((t) => t + 1);
+    }, refreshInterval);
+    return () => clearInterval(id);
+  }, [refreshInterval]);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshTick((t) => t + 1);
+    void Promise.all([
+      utils.events.all.invalidate(),
+      utils.events.countAll.invalidate(),
+      utils.events.filterOptions.invalidate(),
+    ]);
+  }, [utils]);
+
   // Convert timeRange to absolute date range for compatibility
+  // Include refreshTick to force recalculation on refresh
   const dateRange = useMemo(() => {
+    // refreshTick forces recalculation but isn't used in computation
+    void refreshTick;
     return toAbsoluteTimeRange(timeRange) ?? undefined;
-  }, [timeRange]);
+  }, [timeRange, refreshTick]);
 
   const dateRangeFilter: FilterState = dateRange
     ? [
@@ -214,74 +286,18 @@ export default function ObservationsEventsTable({
 
   const oldFilterState = inputFilterState.concat(dateRangeFilter);
 
-  const startTimeFilters = oldFilterState.filter(
-    (f) =>
-      (f.column === "Start Time" || f.column === "startTime") &&
-      f.type === "datetime",
-  ) as TimeFilter[];
-
-  const filterOptions = api.events.filterOptions.useQuery(
-    {
-      projectId,
-      startTimeFilter:
-        startTimeFilters.length > 0 ? startTimeFilters : undefined,
-    },
-    {
-      trpc: {
-        context: {
-          skipBatch: true,
-        },
-      },
-      refetchOnMount: false,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      staleTime: Infinity,
-    },
-  );
-
-  const newFilterOptions = useMemo(() => {
-    const scoreCategories =
-      filterOptions.data?.score_categories?.reduce(
-        (acc, score) => {
-          acc[score.label] = score.values;
-          return acc;
-        },
-        {} as Record<string, string[]>,
-      ) ?? undefined;
-
-    const scoresNumeric = filterOptions.data?.scores_avg ?? undefined;
-
-    return {
-      environment: filterOptions.data?.environment ?? undefined,
-      name: filterOptions.data?.name ?? undefined,
-      type: filterOptions.data?.type ?? undefined,
-      level: filterOptions.data?.level ?? undefined,
-      providedModelName: filterOptions.data?.providedModelName ?? undefined,
-      modelId: filterOptions.data?.modelId ?? undefined,
-      promptName: filterOptions.data?.promptName ?? undefined,
-      traceTags: filterOptions.data?.traceTags ?? undefined,
-      userId: filterOptions.data?.userId ?? undefined,
-      sessionId: filterOptions.data?.sessionId ?? undefined,
-      version: filterOptions.data?.version ?? undefined,
-      latency: [],
-      timeToFirstToken: [],
-      tokensPerSecond: [],
-      inputTokens: [],
-      outputTokens: [],
-      totalTokens: [],
-      inputCost: [],
-      outputCost: [],
-      totalCost: [],
-      score_categories: scoreCategories,
-      scores_avg: scoresNumeric,
-    };
-  }, [filterOptions.data]);
+  // Fetch filter options (scoped to current view mode)
+  const { filterOptions, isFilterOptionsPending } = useEventsFilterOptions({
+    projectId,
+    oldFilterState,
+    hasParentObservation,
+  });
 
   const queryFilter = useSidebarFilterState(
     observationEventsFilterConfig,
-    newFilterOptions,
+    filterOptions,
     projectId,
-    filterOptions.isPending,
+    isFilterOptionsPending,
   );
 
   // Create ref-based wrapper to avoid stale closure when queryFilter updates
@@ -293,65 +309,72 @@ export default function ObservationsEventsTable({
     [],
   );
 
-  const filterState = queryFilter.filterState.concat(dateRangeFilter);
+  // Create view mode filter (not shown in sidebar)
+  const viewModeFilter: FilterState =
+    viewMode === "trace"
+      ? [
+          {
+            column: "hasParentObservation",
+            type: "boolean",
+            operator: "=",
+            value: false, // Only root-level items (no parent)
+          },
+        ]
+      : [];
 
-  const getCountPayload = {
+  // Create user ID filter if userId is provided
+  const userIdFilter: FilterState = userId
+    ? [
+        {
+          column: "User ID",
+          type: "string",
+          operator: "=",
+          value: userId,
+        },
+      ]
+    : [];
+
+  const filterState = queryFilter.filterState
+    .concat(dateRangeFilter)
+    .concat(viewModeFilter)
+    .concat(userIdFilter);
+
+  // Use the custom hook for observations data fetching
+  const {
+    observations,
+    totalCount,
+    handleAddToAnnotationQueue,
+    dataUpdatedAt,
+    ioLoading,
+  } = useEventsTableData({
     projectId,
-    filter: filterState,
+    filterState,
+    paginationState,
+    orderByState,
     searchQuery,
     searchType,
-    page: 1,
-    limit: 1,
-    orderBy: null,
-  };
-
-  const getAllPayload = {
-    ...getCountPayload,
-    page: paginationState.page,
-    limit: paginationState.limit,
-    orderBy: orderByState,
-  };
-
-  const observations = api.events.all.useQuery(getAllPayload, {
-    refetchOnWindowFocus: true,
-  });
-
-  const totalCountQuery = api.events.countAll.useQuery(getCountPayload, {
-    refetchOnWindowFocus: true,
-  });
-
-  const totalCount = totalCountQuery.data?.totalCount ?? null;
-
-  const addToQueueMutation = api.annotationQueueItems.createMany.useMutation({
-    onSuccess: (data) => {
-      showSuccessToast({
-        title: "Observations added to queue",
-        description: `Selected observations will be added to queue "${data.queueName}". This may take a minute.`,
-        link: {
-          href: `/project/${projectId}/annotation-queues/${data.queueId}`,
-          text: `View queue "${data.queueName}"`,
-        },
-      });
-    },
+    selectedRows,
+    selectAll,
+    setSelectedRows,
   });
 
   useEffect(() => {
-    if (observations.isSuccess) {
+    if (observations.status === "success") {
       setDetailPageList(
         "observations",
-        observations.data.observations.map((o) => ({
-          id: o.id,
-          params: o.traceTimestamp
+        observations?.rows?.map((o) => ({
+          id: o?.id,
+          params: o?.startTime
             ? {
-                timestamp: o.traceTimestamp.toISOString(),
-                traceId: o.traceId || "",
+                timestamp: o?.startTime.toISOString(),
+                traceId: o?.traceId || "",
               }
             : undefined,
-        })),
+        })) ?? [],
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [observations.isSuccess, observations.data]);
+  }, [observations.status, observations.rows]);
 
   const { scoreColumns, isLoading: isColumnLoading } =
     useScoreColumns<EventsTableRow>({
@@ -367,37 +390,9 @@ export default function ObservationsEventsTable({
     setSelectedRows,
   });
 
-  const handleAddToAnnotationQueue = async ({
-    projectId,
-    targetId,
-  }: {
-    projectId: string;
-    targetId: string;
-  }) => {
-    const selectedObservationIds = Object.keys(selectedRows).filter(
-      (observationId) =>
-        observations.data?.observations
-          .map((o) => o.id)
-          .includes(observationId),
-    );
-
-    await addToQueueMutation.mutateAsync({
-      projectId,
-      objectIds: selectedObservationIds,
-      objectType: AnnotationQueueObjectType.OBSERVATION,
-      queueId: targetId,
-      isBatchAction: selectAll,
-      query: {
-        filter: filterState,
-        orderBy: orderByState,
-      },
-    });
-    setSelectedRows({});
-  };
-
   const tableActions: TableAction[] = [
     {
-      id: "observation-add-to-annotation-queue",
+      id: ActionId.ObservationAddToAnnotationQueue,
       type: BatchActionType.Create,
       label: "Add to Annotation Queue",
       description: "Add selected observations to an annotation queue.",
@@ -456,6 +451,14 @@ export default function ObservationsEventsTable({
       size: 300,
       cell: ({ row }) => {
         const value: string | undefined = row.getValue("input");
+        if (ioLoading) {
+          return (
+            <JsonSkeleton
+              borderless
+              className="h-full w-full overflow-hidden px-2 py-1"
+            />
+          );
+        }
         return value ? (
           <MemoizedIOTableCell
             isLoading={false}
@@ -473,11 +476,47 @@ export default function ObservationsEventsTable({
       size: 300,
       cell: ({ row }) => {
         const value: string | undefined = row.getValue("output");
+        if (ioLoading) {
+          return (
+            <JsonSkeleton
+              borderless
+              className="h-full w-full overflow-hidden px-2 py-1"
+            />
+          );
+        }
         return value ? (
           <MemoizedIOTableCell
             isLoading={false}
             data={value}
             className={cn("bg-accent-light-green")}
+            singleLine={rowHeight === "s"}
+          />
+        ) : null;
+      },
+      enableHiding: true,
+    },
+    {
+      accessorKey: "metadata",
+      header: "Metadata",
+      size: 300,
+      headerTooltip: {
+        description: "Add metadata to traces to track additional information.",
+        href: "https://langfuse.com/docs/observability/features/metadata",
+      },
+      cell: ({ row }) => {
+        const value: string | undefined = row.getValue("metadata");
+        if (ioLoading) {
+          return (
+            <JsonSkeleton
+              borderless
+              className="h-full w-full overflow-hidden px-2 py-1"
+            />
+          );
+        }
+        return value ? (
+          <MemoizedIOTableCell
+            isLoading={false}
+            data={value}
             singleLine={rowHeight === "s"}
           />
         ) : null;
@@ -557,7 +596,11 @@ export default function ObservationsEventsTable({
         const value: number | undefined = row.getValue("totalCost");
 
         return value !== undefined ? (
-          <BreakdownTooltip details={row.original.costDetails} isCost>
+          <BreakdownTooltip
+            details={row.original.costDetails}
+            isCost
+            pricingTierName={row.original.usagePricingTierName ?? undefined}
+          >
             <div className="flex items-center gap-1">
               <span>{usdFormatter(value)}</span>
               <InfoIcon className="h-3 w-3" />
@@ -575,7 +618,7 @@ export default function ObservationsEventsTable({
       enableHiding: true,
       defaultHidden: true,
       cell: () => {
-        return observations.isPending ? (
+        return observations.status === "loading" ? (
           <Skeleton className="h-3 w-1/2" />
         ) : null;
       },
@@ -645,7 +688,7 @@ export default function ObservationsEventsTable({
       enableHiding: true,
       defaultHidden: true,
       cell: () => {
-        return observations.isPending ? (
+        return observations.status === "loading" ? (
           <Skeleton className="h-3 w-1/2" />
         ) : null;
       },
@@ -744,7 +787,7 @@ export default function ObservationsEventsTable({
         return modelId ? (
           <TableIdOrName value={model} />
         ) : (
-          <UpsertModelFormDrawer
+          <UpsertModelFormDialog
             action="create"
             projectId={projectId}
             prefilledModelData={{
@@ -768,7 +811,7 @@ export default function ObservationsEventsTable({
               <span>{model}</span>
               <PlusCircle className="h-3 w-3" />
             </span>
-          </UpsertModelFormDrawer>
+          </UpsertModelFormDialog>
         );
       },
     },
@@ -956,67 +999,73 @@ export default function ObservationsEventsTable({
       customTitlePrefix: "Observation ID:",
       detailNavigationKey: "observations",
       children: <PeekViewObservationDetail projectId={projectId} />,
-      tableDataUpdatedAt: observations.dataUpdatedAt,
+      tableDataUpdatedAt: dataUpdatedAt,
       ...peekNavigationProps,
     }),
-    [projectId, observations.dataUpdatedAt, peekNavigationProps],
+    [projectId, dataUpdatedAt, peekNavigationProps],
   );
 
   const rows: EventsTableRow[] = useMemo(() => {
-    return observations.isSuccess
-      ? observations.data.observations.map((observation) => {
-          return {
-            id: observation.id,
-            traceId: observation.traceId ?? undefined,
-            type: observation.type ?? undefined,
-            spanId: observation.id, // span_id maps to id
-            parentSpanId: observation.parentObservationId ?? undefined,
-            startTime: observation.startTime,
-            endTime: observation.endTime ?? undefined,
-            timeToFirstToken: observation.timeToFirstToken ?? undefined,
-            scores: {}, // TODO: scores not included in FullObservation type
-            latency: observation.latency ?? undefined,
-            totalCost: observation.totalCost ?? undefined,
-            cost: {
-              inputCost: observation.inputCost ?? undefined,
-              outputCost: observation.outputCost ?? undefined,
-            },
-            name: observation.name ?? undefined,
-            version: observation.version ?? "",
-            providedModelName: observation.model ?? "",
-            modelId: observation.internalModelId ?? undefined,
-            level: observation.level,
-            statusMessage: observation.statusMessage ?? undefined,
-            usage: {
-              inputUsage: observation.inputUsage,
-              outputUsage: observation.outputUsage,
-              totalUsage: observation.totalUsage,
-            },
-            promptId: observation.promptId ?? undefined,
-            promptName: observation.promptName ?? undefined,
-            promptVersion: observation.promptVersion?.toString() ?? undefined,
-            traceTags: observation.traceTags ?? undefined,
-            timestamp: observation.traceTimestamp ?? undefined,
-            usageDetails: observation.usageDetails ?? {},
-            costDetails: observation.costDetails ?? {},
-            environment: observation.environment ?? undefined,
-            input: observation.input
-              ? typeof observation.input === "string"
-                ? observation.input
-                : JSON.stringify(observation.input)
-              : undefined,
-            output: observation.output
-              ? typeof observation.output === "string"
-                ? observation.output
-                : JSON.stringify(observation.output)
-              : undefined,
-            metadata: observation.metadata,
-            userId: undefined, // TODO: map from observation data
-            sessionId: undefined, // TODO: map from observation data
-            completionStartTime: observation.completionStartTime ?? undefined,
-          };
-        })
-      : [];
+    const result =
+      observations.status === "success" && observations.rows
+        ? observations.rows.map((observation) => {
+            return {
+              id: observation.id,
+              traceId: observation.traceId ?? undefined,
+              type: observation.type ?? undefined,
+              spanId: observation.id, // span_id maps to id
+              parentSpanId: observation.parentObservationId ?? undefined,
+              startTime: observation.startTime,
+              endTime: observation.endTime ?? undefined,
+              timeToFirstToken: observation.timeToFirstToken ?? undefined,
+              scores: {}, // TODO: scores not included in FullObservation type
+              latency: observation.latency ?? undefined,
+              totalCost: observation.totalCost ?? undefined,
+              cost: {
+                inputCost: observation.inputCost ?? undefined,
+                outputCost: observation.outputCost ?? undefined,
+              },
+              name: observation.name ?? undefined,
+              version: observation.version ?? "",
+              providedModelName: observation.model ?? "",
+              modelId: observation.internalModelId ?? undefined,
+              level: observation.level,
+              statusMessage: observation.statusMessage ?? undefined,
+              usage: {
+                inputUsage: observation.inputUsage,
+                outputUsage: observation.outputUsage,
+                totalUsage: observation.totalUsage,
+              },
+              promptId: observation.promptId ?? undefined,
+              promptName: observation.promptName ?? undefined,
+              promptVersion: observation.promptVersion?.toString() ?? undefined,
+              traceTags: undefined, // TODO: traceTags not available in EventsObservation
+              timestamp: observation.startTime ?? undefined,
+              usageDetails: observation.usageDetails ?? {},
+              costDetails: observation.costDetails ?? {},
+              usagePricingTierName:
+                observation.usagePricingTierName ?? undefined,
+              environment: observation.environment ?? undefined,
+              // I/O data comes from joined data already
+              input: observation.input
+                ? typeof observation.input === "string"
+                  ? observation.input
+                  : JSON.stringify(observation.input)
+                : undefined,
+              output: observation.output
+                ? typeof observation.output === "string"
+                  ? observation.output
+                  : JSON.stringify(observation.output)
+                : undefined,
+              metadata: observation.metadata,
+              userId: observation.userId ?? undefined,
+              sessionId: observation.sessionId ?? undefined,
+              completionStartTime: observation.completionStartTime ?? undefined,
+            };
+          })
+        : [];
+
+    return result;
   }, [observations]);
 
   return (
@@ -1049,6 +1098,18 @@ export default function ObservationsEventsTable({
           setRowHeight={setRowHeight}
           timeRange={timeRange}
           setTimeRange={setTimeRange}
+          viewModeToggle={
+            <EventsViewModeToggle
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
+            />
+          }
+          refreshConfig={{
+            onRefresh: handleRefresh,
+            isRefreshing: observations.status === "loading",
+            interval: refreshInterval,
+            setInterval: setRefreshInterval,
+          }}
           actionButtons={[
             <BatchExportTableButton
               {...{
@@ -1062,9 +1123,7 @@ export default function ObservationsEventsTable({
               key="batchExport"
             />,
             Object.keys(selectedRows).filter((observationId) =>
-              observations.data?.observations
-                .map((o) => o.id)
-                .includes(observationId),
+              observations.rows?.map((o) => o.id).includes(observationId),
             ).length > 0 ? (
               <TableActionMenu
                 key="observations-multi-select-actions"
@@ -1077,35 +1136,36 @@ export default function ObservationsEventsTable({
           multiSelect={{
             selectAll,
             setSelectAll,
-            selectedRowIds: Object.keys(selectedRows).filter((observationId) =>
-              observations.data?.observations
-                .map((o) => o.id)
-                .includes(observationId),
-            ),
+            selectedRowIds:
+              Object.keys(selectedRows).filter((observationId) =>
+                observations.rows?.map((o) => o.id).includes(observationId),
+              ) ?? [],
             setRowSelection: setSelectedRows,
             totalCount,
             pageSize: paginationState.limit,
             pageIndex: paginationState.page - 1,
           }}
+          filterWithAI
         />
 
         {/* Content area with sidebar and table */}
         <ResizableFilterLayout>
-          <DataTableControls queryFilter={queryFilter} />
+          <DataTableControls queryFilter={queryFilter} filterWithAI />
 
           <div className="flex flex-1 flex-col overflow-hidden">
             <DataTable
+              key={`observations-table-${dataUpdatedAt}-${rows.length > 0 && rows[0]?.input ? "with-io" : "without-io"}`}
               tableName={"observations"}
               columns={columns}
               peekView={peekConfig}
               data={
-                observations.isPending || isViewLoading
+                observations.status === "loading" || isViewLoading
                   ? { isLoading: true, isError: false }
-                  : observations.error
+                  : observations.status === "error"
                     ? {
                         isLoading: false,
                         isError: true,
-                        error: observations.error.message,
+                        error: "",
                       }
                     : {
                         isLoading: false,
