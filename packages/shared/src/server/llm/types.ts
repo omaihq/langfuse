@@ -412,6 +412,8 @@ export type OpenAIModel = (typeof openAIModels)[number];
 // NOTE: Update docs page when changing this! https://langfuse.com/docs/prompt-management/features/playground#openai-playground--anthropic-playground
 // WARNING: The first entry in the array is chosen as the default model to add LLM API keys
 export const anthropicModels = [
+  "claude-sonnet-4-6",
+  "claude-opus-4-6",
   "claude-sonnet-4-5-20250929",
   "claude-haiku-4-5-20251001",
   "claude-opus-4-5-20251101",

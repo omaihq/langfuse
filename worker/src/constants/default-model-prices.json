@@ -3504,5 +3504,107 @@
         }
       }
     ]
+  },
+  {
+    "id": "claude-sonnet-4-6-default",
+    "modelName": "claude-sonnet-4-6",
+    "matchPattern": "(?i)^(anthropic\\/)?((eu\\.|us\\.|apac\\.|global\\.)?anthropic\\.)?claude-sonnet-4-6(-v1(:0)?)?$",
+    "createdAt": "2026-02-17T00:00:00.000Z",
+    "updatedAt": "2026-02-17T00:00:00.000Z",
+    "tokenizerId": "claude",
+    "pricingTiers": [
+      {
+        "id": "claude-sonnet-4-6-default_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 0.000003,
+          "input_tokens": 0.000003,
+          "output": 0.000015,
+          "output_tokens": 0.000015,
+          "cache_creation_input_tokens": 0.00000375,
+          "input_cache_creation": 0.00000375,
+          "cache_read_input_tokens": 3e-7,
+          "input_cache_read": 3e-7
+        }
+      },
+      {
+        "id": "claude-sonnet-4-6-default_tier_large_context",
+        "name": "Large Context",
+        "isDefault": false,
+        "priority": 1,
+        "conditions": [
+          {
+            "usageDetailPattern": "input",
+            "operator": "gt",
+            "value": 200000,
+            "caseSensitive": false
+          }
+        ],
+        "prices": {
+          "input": 0.000006,
+          "input_tokens": 0.000006,
+          "output": 0.0000225,
+          "output_tokens": 0.0000225,
+          "cache_creation_input_tokens": 0.0000075,
+          "input_cache_creation": 0.0000075,
+          "cache_read_input_tokens": 6e-7,
+          "input_cache_read": 6e-7
+        }
+      }
+    ]
+  },
+  {
+    "id": "claude-opus-4-6-default",
+    "modelName": "claude-opus-4-6",
+    "matchPattern": "(?i)^(anthropic\\/)?((eu\\.|us\\.|apac\\.|global\\.)?anthropic\\.)?claude-opus-4-6(-v1(:0)?)?$",
+    "createdAt": "2026-02-05T00:00:00.000Z",
+    "updatedAt": "2026-02-05T00:00:00.000Z",
+    "tokenizerId": "claude",
+    "pricingTiers": [
+      {
+        "id": "claude-opus-4-6-default_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 5e-6,
+          "input_tokens": 5e-6,
+          "output": 25e-6,
+          "output_tokens": 25e-6,
+          "cache_creation_input_tokens": 6.25e-6,
+          "input_cache_creation": 6.25e-6,
+          "cache_read_input_tokens": 0.5e-6,
+          "input_cache_read": 0.5e-6
+        }
+      },
+      {
+        "id": "claude-opus-4-6-default_tier_large_context",
+        "name": "Large Context",
+        "isDefault": false,
+        "priority": 1,
+        "conditions": [
+          {
+            "usageDetailPattern": "input",
+            "operator": "gt",
+            "value": 200000,
+            "caseSensitive": false
+          }
+        ],
+        "prices": {
+          "input": 10e-6,
+          "input_tokens": 10e-6,
+          "output": 37.5e-6,
+          "output_tokens": 37.5e-6,
+          "cache_creation_input_tokens": 12.5e-6,
+          "input_cache_creation": 12.5e-6,
+          "cache_read_input_tokens": 1e-6,
+          "input_cache_read": 1e-6
+        }
+      }
+    ]
   }
 ]

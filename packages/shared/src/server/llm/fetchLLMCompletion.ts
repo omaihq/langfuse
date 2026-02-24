@@ -235,6 +235,8 @@ export async function fetchLLMCompletion(
     | ChatGoogleGenerativeAI;
   if (modelParams.adapter === LLMAdapter.Anthropic) {
     const isClaude45Family =
+      modelParams.model?.includes("claude-sonnet-4-6") ||
+      modelParams.model?.includes("claude-opus-4-6") ||
       modelParams.model?.includes("claude-sonnet-4-5") ||
       modelParams.model?.includes("claude-opus-4-1") ||
       modelParams.model?.includes("claude-opus-4-5") ||
