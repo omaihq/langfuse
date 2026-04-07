@@ -130,7 +130,7 @@ export const entitlementAccess: Record<
     },
   },
   oss: {
-    entitlements: selfHostedAllPlansEntitlements,
+    entitlements: [...selfHostedAllPlansEntitlements, "rbac-project-roles"],
     entitlementLimits: {
       "annotation-queue-count": false,
       "organization-member-count": false,

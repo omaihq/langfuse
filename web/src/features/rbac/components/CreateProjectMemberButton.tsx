@@ -85,6 +85,7 @@ export function CreateProjectMemberButton(props: {
   const hasProjectRoleEntitlement = useHasEntitlement("rbac-project-roles");
   const hasOnlySingleProjectAccess =
     !hasOrgAccess && hasProjectAccess && hasProjectRoleEntitlement;
+  const isProjectContext = !!props.project && hasProjectRoleEntitlement;
 
   const utils = api.useUtils();
   const mutCreateProjectMember = api.members.create.useMutation({
@@ -100,8 +101,8 @@ export function CreateProjectMemberButton(props: {
     resolver: zodResolver(formSchema),
     defaultValues: {
       email: "",
-      orgRole: hasOnlySingleProjectAccess ? Role.NONE : Role.MEMBER,
-      projectRole: hasOnlySingleProjectAccess ? Role.MEMBER : Role.NONE,
+      orgRole: isProjectContext ? Role.NONE : Role.MEMBER,
+      projectRole: isProjectContext ? Role.MEMBER : Role.NONE,
     },
   });
 
