@@ -15,7 +15,7 @@ import {
   convertDateToClickhouseDateTime,
 } from "@langfuse/shared/src/server";
 import { getFilteredSessions } from "../server/conversations-service";
-import { ScoreSource } from "@langfuse/shared";
+import { ScoreSourceEnum } from "@langfuse/shared";
 import { TRPCError } from "@trpc/server";
 import { v4 } from "uuid";
 
@@ -223,7 +223,7 @@ export const conversationRouter = createTRPCRouter({
           const existing = await getScoreById({
             projectId: input.projectId,
             scoreId: input.scoreId,
-            source: ScoreSource.ANNOTATION,
+            source: ScoreSourceEnum.ANNOTATION,
           });
           if (!existing)
             throw new TRPCError({
@@ -266,7 +266,7 @@ export const conversationRouter = createTRPCRouter({
             data_type: input.dataType,
             config_id: input.configId ?? null,
             comment: input.comment ?? null,
-            source: ScoreSource.ANNOTATION,
+            source: ScoreSourceEnum.ANNOTATION,
             author_user_id: ctx.session.user.id,
             environment: "default",
             created_at: convertDateToClickhouseDateTime(new Date()),
