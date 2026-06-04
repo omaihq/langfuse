@@ -216,70 +216,83 @@ export const conversationRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      let scoreToUpsert;
-      if (input.scoreId) {
-        // Update existing score
-        const existing = await getScoreById({
-          projectId: input.projectId,
-          scoreId: input.scoreId,
-          source: ScoreSource.ANNOTATION,
-        });
-        if (!existing)
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Score not found",
+      try {
+        let scoreToUpsert;
+        if (input.scoreId) {
+          // Update existing score
+          const existing = await getScoreById({
+            projectId: input.projectId,
+            scoreId: input.scoreId,
+            source: ScoreSource.ANNOTATION,
           });
-        scoreToUpsert = {
-          id: existing.id,
-          project_id: existing.projectId,
-          name: existing.name,
-          timestamp: convertDateToClickhouseDateTime(new Date()),
-          value: input.value ?? existing.value,
-          string_value: input.stringValue ?? existing.stringValue,
-          comment: input.comment ?? existing.comment,
-          updated_at: convertDateToClickhouseDateTime(new Date()),
-          created_at: existing.createdAt
-            ? convertDateToClickhouseDateTime(new Date(existing.createdAt))
-            : convertDateToClickhouseDateTime(new Date()),
-          data_type: existing.dataType,
-          config_id: existing.configId,
-          source: existing.source,
-          author_user_id: existing.authorUserId,
-          environment: existing.environment,
-          trace_id: existing.traceId,
-          observation_id: existing.observationId,
-          session_id: existing.sessionId,
-          dataset_run_id: existing.datasetRunId,
-          queue_id: existing.queueId,
-          metadata: {}, // always use empty object for metadata for now
-        };
-      } else {
-        // Create new score
-        scoreToUpsert = {
-          id: v4(),
-          project_id: input.projectId,
-          trace_id: input.traceId,
-          name: input.name,
-          value: input.value ?? null,
-          string_value: input.stringValue ?? null,
-          data_type: input.dataType,
-          config_id: input.configId ?? null,
-          comment: input.comment ?? null,
-          source: ScoreSource.ANNOTATION,
-          author_user_id: ctx.session.user.id,
-          environment: "default",
-          created_at: convertDateToClickhouseDateTime(new Date()),
-          updated_at: convertDateToClickhouseDateTime(new Date()),
-          timestamp: convertDateToClickhouseDateTime(new Date()),
-          session_id: null,
-          dataset_run_id: null,
-          observation_id: null,
-          queue_id: null,
-          metadata: {},
-        };
+          if (!existing)
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Score not found",
+            });
+          scoreToUpsert = {
+            id: existing.id,
+            project_id: existing.projectId,
+            name: existing.name,
+            timestamp: convertDateToClickhouseDateTime(new Date()),
+            value: input.value ?? existing.value,
+            string_value: input.stringValue ?? existing.stringValue,
+            comment: input.comment ?? existing.comment,
+            updated_at: convertDateToClickhouseDateTime(new Date()),
+            created_at: existing.createdAt
+              ? convertDateToClickhouseDateTime(new Date(existing.createdAt))
+              : convertDateToClickhouseDateTime(new Date()),
+            data_type: existing.dataType,
+            config_id: existing.configId,
+            source: existing.source,
+            author_user_id: existing.authorUserId,
+            environment: existing.environment,
+            trace_id: existing.traceId,
+            observation_id: existing.observationId,
+            session_id: existing.sessionId,
+            dataset_run_id: existing.datasetRunId,
+            queue_id: existing.queueId,
+            metadata: {}, // always use empty object for metadata for now
+          };
+        } else {
+          // Create new score
+          scoreToUpsert = {
+            id: v4(),
+            project_id: input.projectId,
+            trace_id: input.traceId,
+            name: input.name,
+            value: input.value ?? null,
+            string_value: input.stringValue ?? null,
+            data_type: input.dataType,
+            config_id: input.configId ?? null,
+            comment: input.comment ?? null,
+            source: ScoreSource.ANNOTATION,
+            author_user_id: ctx.session.user.id,
+            environment: "default",
+            created_at: convertDateToClickhouseDateTime(new Date()),
+            updated_at: convertDateToClickhouseDateTime(new Date()),
+            timestamp: convertDateToClickhouseDateTime(new Date()),
+            session_id: null,
+            dataset_run_id: null,
+            observation_id: null,
+            queue_id: null,
+            metadata: {},
+          };
+        }
+        await upsertScore(scoreToUpsert);
+        return { success: true };
+      } catch (e) {
+        // Re-throw expected client errors (e.g. NOT_FOUND) untouched.
+        if (e instanceof TRPCError) throw e;
+        // Otherwise surface the real cause in the logs instead of the masked
+        // "Internal error. Please check error logs…" message the global tRPC
+        // formatter returns for self-hosted INTERNAL_SERVER_ERRORs.
+        logger.error("Unable to call conversation.upsertScore", e);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to upsert score",
+        });
       }
-      await upsertScore(scoreToUpsert);
-      return { success: true };
     }),
   deleteScore: protectedProjectProcedure
     .input(conversationScoreDeleteInput)
