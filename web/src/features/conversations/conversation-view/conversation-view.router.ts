@@ -261,7 +261,7 @@ export const conversationRouter = createTRPCRouter({
             project_id: input.projectId,
             trace_id: input.traceId,
             name: input.name,
-            value: input.value ?? null,
+            value: input.value ?? 0,
             string_value: input.stringValue ?? null,
             data_type: input.dataType,
             config_id: input.configId ?? null,
