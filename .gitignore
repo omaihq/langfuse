@@ -79,6 +79,8 @@ web/test-results/*
 
 # claude meta files
 .claude/tsc-cache
+# per-user agent memory & session data (keyed to local absolute path)
+.claude/projects/
 
 # Refactoring planning files (local only)
 **/.refactor/

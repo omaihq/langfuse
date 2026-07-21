@@ -21,6 +21,7 @@ import {
   getChunkWithFlattenedScores,
   isTraceTimestampFilter,
   prepareScoresForOutput,
+  resolveExportUserId,
 } from "./getDatabaseReadStream";
 import { fetchCommentsForExport } from "./fetchCommentsForExport";
 
@@ -257,7 +258,9 @@ export const getTraceStream = async (props: {
               ? bufferedRow.timestamp
               : parseClickhouseUTCDateTimeFormat(bufferedRow.timestamp),
           name: bufferedRow.name ?? "",
-          userId: bufferedRow.user_id,
+          // Emit the shareable id from trace metadata (falls back to null)
+          // instead of the raw `user_id`, which may contain an email/PII.
+          userId: resolveExportUserId(bufferedRow.metadata),
           sessionId: bufferedRow.session_id,
           release: bufferedRow.release,
           version: bufferedRow.version,

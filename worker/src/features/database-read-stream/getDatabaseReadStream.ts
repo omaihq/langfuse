@@ -59,6 +59,36 @@ export const isTraceTimestampFilter = (
 ): filter is TimeFilter => {
   return filter.column === "Timestamp" && filter.type === "datetime";
 };
+/**
+ * Metadata key under which the ingestion pipeline stores a shareable, non-PII
+ * user identifier (e.g. a Supabase user id). The raw ingested trace `user_id`
+ * may be an email or other PII, so batch exports surface this value in the
+ * `userId` column instead whenever it is present on the trace's metadata.
+ */
+export const EXPORT_USER_ID_METADATA_KEY = "supabase_id";
+
+/**
+ * Resolves the value to emit in an export's `userId` column. Prefers the
+ * shareable id stored in the trace's metadata; when it is absent (e.g. traces
+ * ingested before the id was written) returns null so that the raw, potentially
+ * PII `user_id` is never written to a shareable export.
+ *
+ * NOTE: to keep an email/identifier for legacy traces instead, change the
+ * fallback below from `null` to the raw `user_id`.
+ */
+export const resolveExportUserId = (metadata: unknown): string | null => {
+  const shareableId =
+    metadata &&
+    typeof metadata === "object" &&
+    EXPORT_USER_ID_METADATA_KEY in metadata
+      ? (metadata as Record<string, unknown>)[EXPORT_USER_ID_METADATA_KEY]
+      : undefined;
+
+  return typeof shareableId === "string" && shareableId.length > 0
+    ? shareableId
+    : null;
+};
+
 export const getChunkWithFlattenedScores = <
   T extends BatchExportTracesRow[] | FullObservationsWithScores,
 >(
