@@ -13,7 +13,10 @@ import {
 } from "@langfuse/shared/src/server";
 import { BatchExportTableName, DatasetStatus } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
-import { getDatabaseReadStreamPaginated } from "../features/database-read-stream/getDatabaseReadStream";
+import {
+  getDatabaseReadStreamPaginated,
+  resolveExportUserId,
+} from "../features/database-read-stream/getDatabaseReadStream";
 import { getObservationStream } from "../features/database-read-stream/observation-stream";
 import { getTraceStream } from "../features/database-read-stream/trace-stream";
 // Set environment variable before any imports to ensure it's picked up by env module
@@ -2057,7 +2060,11 @@ describe("batch export test suite", () => {
     // Verify Thai characters are preserved
     const thaiTrace = rows.find((r) => r.name === "สวัสดี ภาษาไทย");
     expect(thaiTrace).toBeDefined();
-    expect(thaiTrace?.userId).toBe("ผู้ใช้");
+    // `userId` is pseudonymised on export rather than passed through, so we
+    // compare against the resolver's output for the same raw input. That still
+    // proves the non-ASCII value survived the ClickHouse round-trip: a mangled
+    // value would produce a different digest.
+    expect(thaiTrace?.userId).toBe(resolveExportUserId("ผู้ใช้"));
     expect(thaiTrace?.metadata).toEqual({
       description: "การทดสอบภาษาไทย",
       mixed: "Hello สวัสดี 世界 مرحبا 🌍",
@@ -2067,7 +2074,7 @@ describe("batch export test suite", () => {
     // Verify Chinese characters are preserved
     const chineseTrace = rows.find((r) => r.name === "中文测试");
     expect(chineseTrace).toBeDefined();
-    expect(chineseTrace?.userId).toBe("用户");
+    expect(chineseTrace?.userId).toBe(resolveExportUserId("用户"));
     expect(chineseTrace?.metadata).toEqual({
       description: "这是中文测试",
     });
@@ -2076,11 +2083,22 @@ describe("batch export test suite", () => {
     // Verify Arabic characters are preserved
     const arabicTrace = rows.find((r) => r.name === "العربية");
     expect(arabicTrace).toBeDefined();
-    expect(arabicTrace?.userId).toBe("مستخدم");
+    expect(arabicTrace?.userId).toBe(resolveExportUserId("مستخدم"));
     expect(arabicTrace?.metadata).toEqual({
       description: "اختبار اللغة العربية",
     });
     expect(arabicTrace?.tags).toEqual(["عربي"]);
+
+    // Guard against the assertions above passing vacuously: with no salt
+    // configured every userId resolves to null and the three comparisons
+    // would trivially hold. Distinct raw inputs must yield distinct digests.
+    const userIds = [thaiTrace, chineseTrace, arabicTrace].map(
+      (t) => t?.userId,
+    );
+    expect(userIds.every((id) => typeof id === "string" && id.length > 0)).toBe(
+      true,
+    );
+    expect(new Set(userIds).size).toBe(3);
   });
 
   it("should export sessions filtered by comment count", async () => {

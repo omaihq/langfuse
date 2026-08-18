@@ -221,7 +221,9 @@ export const getDatabaseReadStreamPaginated = async ({
               metadata: score.metadata,
               observationId: score.observationId,
               traceName: score.traceName,
-              userId: score.traceUserId,
+              // Pseudonymised for the same reason as the trace export: this is
+              // the raw trace `user_id`, which may be an email.
+              userId: resolveExportUserId(score.traceUserId),
               traceTags: score.traceTags,
               environment: score.environment,
               authorUserName: user?.name ?? null,
@@ -269,7 +271,12 @@ export const getDatabaseReadStreamPaginated = async ({
           const rows = sessions.map((s) => {
             const row: BatchExportSessionsRow = {
               id: s.session_id,
-              userIds: s.user_ids,
+              // Same pseudonymisation as the trace export. Entries that resolve
+              // to null (blank id, or no salt configured) are dropped rather
+              // than emitted as holes, so the array stays a clean list of ids.
+              userIds: s.user_ids
+                ?.map(resolveExportUserId)
+                .filter((id): id is string => id !== null),
               countTraces: s.trace_ids.length,
               sessionDuration: Number(s.duration) / 1000,
               inputCost: new Decimal(s.session_input_cost),
