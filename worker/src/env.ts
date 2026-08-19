@@ -49,6 +49,12 @@ const EnvSchema = z.object({
   // raw (PII) value — see the fail-closed note on `resolveExportUserId`.
   LANGFUSE_EXPORT_USER_ID_SALT: z.string().min(16).optional(),
 
+  // Extra metadata keys (comma-separated) whose values are raw person-identifying
+  // ids and must be pseudonymised in exports alongside `userId`. Metadata shapes
+  // are application-specific, so the built-in defaults cannot be exhaustive.
+  // See `resolveExportMetadata` in features/database-read-stream.
+  LANGFUSE_EXPORT_PSEUDONYMISED_METADATA_KEYS: z.string().optional(),
+
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: z.string({
     error: "Langfuse requires a bucket name for S3 Event Uploads.",
   }),

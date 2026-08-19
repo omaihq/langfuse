@@ -26,6 +26,7 @@ import {
   getChunkWithFlattenedScores,
   prepareScoresForOutput,
   resolveExportUserId,
+  resolveExportMetadata,
 } from "./getDatabaseReadStream";
 import { fetchCommentsForExport } from "./fetchCommentsForExport";
 import type { Model, Price } from "@prisma/client";
@@ -350,13 +351,19 @@ export const getObservationStream = async (props: {
     // Get comments for this observation
     const observationComments = commentsByObservation.get(bufferedRow.id) ?? [];
 
+    const observation = convertObservation(bufferedRow, {
+      truncated: false,
+      shouldJsonParse: true,
+    });
+
     return getChunkWithFlattenedScores(
       [
         {
-          ...convertObservation(bufferedRow, {
-            truncated: false,
-            shouldJsonParse: true,
-          }),
+          ...observation,
+          // convertObservation passes metadata through verbatim (after its own
+          // JSON parsing); rewrite the identifying keys so they cannot be
+          // joined back to the pseudonym in the `userId` column.
+          metadata: resolveExportMetadata(observation.metadata),
           traceName: bufferedRow.traceName,
           traceTags: bufferedRow.traceTags,
           traceTimestamp: bufferedRow.traceTimestamp,
