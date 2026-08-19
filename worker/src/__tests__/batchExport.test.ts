@@ -16,6 +16,7 @@ import { prisma } from "@langfuse/shared/src/db";
 import {
   getDatabaseReadStreamPaginated,
   resolveExportUserId,
+  resolveExportMetadata,
 } from "../features/database-read-stream/getDatabaseReadStream";
 import { getObservationStream } from "../features/database-read-stream/observation-stream";
 import { getTraceStream } from "../features/database-read-stream/trace-stream";
@@ -2277,5 +2278,71 @@ describe("batch export test suite", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(traceWithComments);
     expect(rows[0].name).toBe("trace-with-comments");
+  });
+});
+
+describe("resolveExportMetadata", () => {
+  it("pseudonymises identifying keys with the same digest as the userId column", () => {
+    const rawId = "6a133bad-0000-4000-8000-000000000001";
+
+    const result = resolveExportMetadata({ supabase_id: rawId }) as Record<
+      string,
+      unknown
+    >;
+
+    // The whole point: the metadata copy must not be joinable back to the
+    // pseudonym that lands in the `userId` column for the same person.
+    expect(result.supabase_id).toBe(resolveExportUserId(rawId));
+    expect(result.supabase_id).not.toBe(rawId);
+  });
+
+  it("rewrites identifying keys nested in objects and arrays", () => {
+    const rawId = "6a133bad-0000-4000-8000-000000000002";
+
+    const result = resolveExportMetadata({
+      outer: { inner: { user_id: rawId } },
+      list: [{ supabase_id: rawId }],
+    }) as any;
+
+    expect(result.outer.inner.user_id).toBe(resolveExportUserId(rawId));
+    expect(result.list[0].supabase_id).toBe(resolveExportUserId(rawId));
+  });
+
+  it("matches keys case-insensitively", () => {
+    const rawId = "6a133bad-0000-4000-8000-000000000003";
+
+    const result = resolveExportMetadata({
+      userId: rawId,
+      USER_ID: rawId,
+    }) as Record<string, unknown>;
+
+    expect(result.userId).toBe(resolveExportUserId(rawId));
+    expect(result.USER_ID).toBe(resolveExportUserId(rawId));
+  });
+
+  it("leaves unrelated keys and non-string values untouched", () => {
+    const metadata = {
+      job_execution_id: "not-a-person",
+      ls_temperature: 0.7,
+      nested: { note: "keep me" },
+      supabase_id: 12345,
+    };
+
+    // A non-string under an identifying key is not an id we can pseudonymise;
+    // rewriting it would corrupt the field rather than protect anyone.
+    expect(resolveExportMetadata(metadata)).toEqual(metadata);
+  });
+
+  it("passes through non-object metadata unchanged", () => {
+    expect(resolveExportMetadata(null)).toBeNull();
+    expect(resolveExportMetadata(undefined)).toBeUndefined();
+    expect(resolveExportMetadata("plain string")).toBe("plain string");
+  });
+
+  it("stops walking at the depth cap instead of recursing without bound", () => {
+    let deep: Record<string, unknown> = { user_id: "too-deep-to-reach" };
+    for (let i = 0; i < 20; i++) deep = { nested: deep };
+
+    expect(() => resolveExportMetadata(deep)).not.toThrow();
   });
 });

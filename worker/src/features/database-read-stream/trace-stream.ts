@@ -22,6 +22,7 @@ import {
   isTraceTimestampFilter,
   prepareScoresForOutput,
   resolveExportUserId,
+  resolveExportMetadata,
 } from "./getDatabaseReadStream";
 import { fetchCommentsForExport } from "./fetchCommentsForExport";
 
@@ -270,7 +271,7 @@ export const getTraceStream = async (props: {
           public: bufferedRow.public,
           input: bufferedRow.input,
           output: bufferedRow.output,
-          metadata: bufferedRow.metadata,
+          metadata: resolveExportMetadata(bufferedRow.metadata),
           scores: outputScores,
           comments: traceComments,
         },

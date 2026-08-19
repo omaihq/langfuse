@@ -96,6 +96,76 @@ export const resolveExportUserId = (userId: string | null): string | null => {
 };
 
 /**
+ * Metadata keys whose value is a raw, person-identifying id.
+ *
+ * Pseudonymising the `userId` column alone is not enough: applications put the
+ * same identity into trace metadata, so the raw value ends up in the very row
+ * that carries its own pseudonym. Anyone holding an export can then join the
+ * two columns and recover every identity, which defeats the HMAC entirely.
+ *
+ * These keys are rewritten with `resolveExportUserId`, so a given person maps
+ * to the same pseudonym whether the id arrived via `user_id` or via metadata.
+ * Joins inside an export keep working; joins back to a real person do not.
+ *
+ * Matched case-insensitively. Extend per deployment via
+ * `LANGFUSE_EXPORT_PSEUDONYMISED_METADATA_KEYS` — metadata shapes are
+ * application-specific, so the defaults cannot be exhaustive.
+ */
+const DEFAULT_PSEUDONYMISED_METADATA_KEYS = [
+  "supabase_id",
+  "user_id",
+  "userid",
+];
+
+/** Guards against pathological nesting; metadata is caller-supplied JSON. */
+const METADATA_WALK_MAX_DEPTH = 12;
+
+const pseudonymisedMetadataKeys = new Set(
+  [
+    ...DEFAULT_PSEUDONYMISED_METADATA_KEYS,
+    ...(env.LANGFUSE_EXPORT_PSEUDONYMISED_METADATA_KEYS?.split(",") ?? []),
+  ]
+    .map((key) => key.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+/**
+ * Rewrites identifying ids anywhere in an export's `metadata` value.
+ *
+ * Walks nested objects and arrays because metadata is arbitrary caller-supplied
+ * JSON and the id is not always top-level. Values that are not strings are left
+ * alone: a non-string under one of these keys is not an id we can pseudonymise,
+ * and rewriting it would corrupt the field.
+ */
+/*
+ * Generic in/out: the walk preserves the shape of `metadata`, only rewriting
+ * the *values* under identifying keys. Typing it as `unknown` would widen every
+ * call site and break the inferred row types.
+ */
+export const resolveExportMetadata = <T>(metadata: T, depth = 0): T => {
+  if (metadata === null || typeof metadata !== "object") return metadata;
+  if (depth >= METADATA_WALK_MAX_DEPTH) return metadata;
+
+  if (Array.isArray(metadata)) {
+    return metadata.map((entry) =>
+      resolveExportMetadata(entry, depth + 1),
+    ) as T;
+  }
+
+  return Object.fromEntries(
+    Object.entries(metadata as Record<string, unknown>).map(([key, value]) => {
+      if (pseudonymisedMetadataKeys.has(key.toLowerCase())) {
+        return [
+          key,
+          typeof value === "string" ? resolveExportUserId(value) : value,
+        ];
+      }
+      return [key, resolveExportMetadata(value, depth + 1)];
+    }),
+  ) as T;
+};
+
+/**
  * True when exports will emit an empty `userId` for every row because no salt
  * is configured. Used to warn once per export rather than silently shipping a
  * blank column, which is how the previous fallback went unnoticed.
@@ -218,7 +288,7 @@ export const getDatabaseReadStreamPaginated = async ({
               value: score.value,
               stringValue: score.stringValue,
               comment: score.comment,
-              metadata: score.metadata,
+              metadata: resolveExportMetadata(score.metadata),
               observationId: score.observationId,
               traceName: score.traceName,
               // Pseudonymised for the same reason as the trace export: this is
@@ -464,7 +534,7 @@ export const getDatabaseReadStreamPaginated = async ({
               ...t,
               input: fullTrace?.input,
               output: fullTrace?.output,
-              metadata: fullTrace?.metadata,
+              metadata: resolveExportMetadata(fullTrace?.metadata),
               latency: metric?.latency,
               name: t.name ?? "",
               usage: {
