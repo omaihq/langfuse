@@ -27,6 +27,7 @@ import {
   getDatasetItems,
 } from "@langfuse/shared/src/server";
 import Decimal from "decimal.js";
+import { createHmac } from "crypto";
 import { env } from "../../env";
 import { BatchExportTracesRow, BatchExportSessionsRow } from "./types";
 import { fetchCommentsForExport } from "./fetchCommentsForExport";
@@ -60,34 +61,47 @@ export const isTraceTimestampFilter = (
   return filter.column === "Timestamp" && filter.type === "datetime";
 };
 /**
- * Metadata key under which the ingestion pipeline stores a shareable, non-PII
- * user identifier (e.g. a Supabase user id). The raw ingested trace `user_id`
- * may be an email or other PII, so batch exports surface this value in the
- * `userId` column instead whenever it is present on the trace's metadata.
+ * Number of hex characters kept from the HMAC digest. 16 hex chars = 64 bits;
+ * at 100k users the birthday-bound collision probability is ~1e-10.
  */
-export const EXPORT_USER_ID_METADATA_KEY = "supabase_id";
+const EXPORT_USER_ID_LENGTH = 16;
 
 /**
- * Resolves the value to emit in an export's `userId` column. Prefers the
- * shareable id stored in the trace's metadata; when it is absent (e.g. traces
- * ingested before the id was written) returns null so that the raw, potentially
- * PII `user_id` is never written to a shareable export.
+ * Resolves the value to emit in an export's `userId` column.
  *
- * NOTE: to keep an email/identifier for legacy traces instead, change the
- * fallback below from `null` to the raw `user_id`.
+ * The raw ingested `user_id` may be an email or other PII, so exports emit a
+ * salted, stable pseudonym derived from it instead. Deriving from `user_id`
+ * for *every* row (rather than preferring some ids and hashing others) is
+ * deliberate: it keeps a single id space, so the same person carries the same
+ * id across the whole export window and longitudinal analysis stays valid.
+ *
+ * A plain (unsalted) hash would not be enough. Email addresses are a low-entropy,
+ * enumerable space, so anyone holding an export could hash a candidate address
+ * and confirm whether that person is in the dataset. The HMAC secret keeps that
+ * lookup on our side only.
+ *
+ * Fails closed: with no secret configured we emit null rather than leaking the
+ * raw value. Callers are expected to log this once per export, not per row.
  */
-export const resolveExportUserId = (metadata: unknown): string | null => {
-  const shareableId =
-    metadata &&
-    typeof metadata === "object" &&
-    EXPORT_USER_ID_METADATA_KEY in metadata
-      ? (metadata as Record<string, unknown>)[EXPORT_USER_ID_METADATA_KEY]
-      : undefined;
+export const resolveExportUserId = (userId: string | null): string | null => {
+  if (!userId) return null;
 
-  return typeof shareableId === "string" && shareableId.length > 0
-    ? shareableId
-    : null;
+  const salt = env.LANGFUSE_EXPORT_USER_ID_SALT;
+  if (!salt) return null;
+
+  return createHmac("sha256", salt)
+    .update(userId)
+    .digest("hex")
+    .slice(0, EXPORT_USER_ID_LENGTH);
 };
+
+/**
+ * True when exports will emit an empty `userId` for every row because no salt
+ * is configured. Used to warn once per export rather than silently shipping a
+ * blank column, which is how the previous fallback went unnoticed.
+ */
+export const isExportUserIdDisabled = (): boolean =>
+  !env.LANGFUSE_EXPORT_USER_ID_SALT;
 
 export const getChunkWithFlattenedScores = <
   T extends BatchExportTracesRow[] | FullObservationsWithScores,
@@ -207,7 +221,9 @@ export const getDatabaseReadStreamPaginated = async ({
               metadata: score.metadata,
               observationId: score.observationId,
               traceName: score.traceName,
-              userId: score.traceUserId,
+              // Pseudonymised for the same reason as the trace export: this is
+              // the raw trace `user_id`, which may be an email.
+              userId: resolveExportUserId(score.traceUserId),
               traceTags: score.traceTags,
               environment: score.environment,
               authorUserName: user?.name ?? null,
@@ -255,7 +271,12 @@ export const getDatabaseReadStreamPaginated = async ({
           const rows = sessions.map((s) => {
             const row: BatchExportSessionsRow = {
               id: s.session_id,
-              userIds: s.user_ids,
+              // Same pseudonymisation as the trace export. Entries that resolve
+              // to null (blank id, or no salt configured) are dropped rather
+              // than emitted as holes, so the array stays a clean list of ids.
+              userIds: s.user_ids
+                ?.map(resolveExportUserId)
+                .filter((id): id is string => id !== null),
               countTraces: s.trace_ids.length,
               sessionDuration: Number(s.duration) / 1000,
               inputCost: new Decimal(s.session_input_cost),

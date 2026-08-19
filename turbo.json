@@ -2,6 +2,13 @@
   "$schema": "https://turbo.build/schema.json",
   "globalDependencies": [".env"],
   "envMode": "loose",
+  "globalPassThroughEnv": [
+    "BUILD_ID",
+    "LANGFUSE_TRACING_SAMPLE_RATE",
+    "NODE_ENV",
+    "SENTRY_DSN",
+    "SENTRY_ENVIRONMENT"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["db:generate", "^build"],

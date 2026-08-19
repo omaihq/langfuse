@@ -38,6 +38,17 @@ const EnvSchema = z.object({
   LANGFUSE_S3_BATCH_EXPORT_SSE: z.enum(["AES256", "aws:kms"]).optional(),
   LANGFUSE_S3_BATCH_EXPORT_SSE_KMS_KEY_ID: z.string().optional(),
 
+  // Secret used to derive the pseudonymous `userId` emitted in batch exports.
+  // See `resolveExportUserId` in features/database-read-stream.
+  //
+  // MUST be stable forever and backed up: rotating it changes every exported
+  // id, silently breaking comparability with all previously shared exports.
+  // Generate via: openssl rand -hex 32
+  //
+  // When unset, exports emit an empty `userId` rather than falling back to the
+  // raw (PII) value — see the fail-closed note on `resolveExportUserId`.
+  LANGFUSE_EXPORT_USER_ID_SALT: z.string().min(16).optional(),
+
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: z.string({
     error: "Langfuse requires a bucket name for S3 Event Uploads.",
   }),

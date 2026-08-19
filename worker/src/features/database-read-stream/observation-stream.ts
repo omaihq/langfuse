@@ -245,7 +245,6 @@ export const getObservationStream = async (props: {
         t.tags as traceTags,
         t.timestamp as traceTimestamp,
         t.user_id as userId,
-        t.metadata as traceMetadata,
         s.scores_avg as scores_avg,
         s.score_categories as score_categories
       FROM observations o
@@ -273,7 +272,6 @@ export const getObservationStream = async (props: {
       traceTags: string[];
       traceTimestamp: Date;
       userId: string | null;
-      traceMetadata: unknown;
     }
   >({
     query,
@@ -315,7 +313,6 @@ export const getObservationStream = async (props: {
     traceTags: string[];
     traceTimestamp: Date;
     userId: string | null;
-    traceMetadata: unknown;
   };
 
   const processObservationRow = async (
@@ -363,10 +360,9 @@ export const getObservationStream = async (props: {
           traceName: bufferedRow.traceName,
           traceTags: bufferedRow.traceTags,
           traceTimestamp: bufferedRow.traceTimestamp,
-          // Emit the shareable id from the parent trace's metadata (falls back
-          // to null) instead of the raw `user_id`, which may contain an
-          // email/PII.
-          userId: resolveExportUserId(bufferedRow.traceMetadata),
+          // Emit a salted pseudonym instead of the parent trace's raw
+          // `user_id`, which may contain an email/PII.
+          userId: resolveExportUserId(bufferedRow.userId),
           toolDefinitionsCount: null,
           toolCallsCount: null,
           ...modelData,

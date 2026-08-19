@@ -258,9 +258,9 @@ export const getTraceStream = async (props: {
               ? bufferedRow.timestamp
               : parseClickhouseUTCDateTimeFormat(bufferedRow.timestamp),
           name: bufferedRow.name ?? "",
-          // Emit the shareable id from trace metadata (falls back to null)
-          // instead of the raw `user_id`, which may contain an email/PII.
-          userId: resolveExportUserId(bufferedRow.metadata),
+          // Emit a salted pseudonym instead of the raw `user_id`, which may
+          // contain an email/PII.
+          userId: resolveExportUserId(bufferedRow.user_id),
           sessionId: bufferedRow.session_id,
           release: bufferedRow.release,
           version: bufferedRow.version,

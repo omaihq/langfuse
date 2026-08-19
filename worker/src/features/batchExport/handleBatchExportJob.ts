@@ -19,7 +19,10 @@ import {
   type CommentObjectType,
 } from "@langfuse/shared/src/server";
 import { env } from "../../env";
-import { getDatabaseReadStreamPaginated } from "../database-read-stream/getDatabaseReadStream";
+import {
+  getDatabaseReadStreamPaginated,
+  isExportUserIdDisabled,
+} from "../database-read-stream/getDatabaseReadStream";
 import { getObservationStream } from "../database-read-stream/observation-stream";
 import { getTraceStream } from "../database-read-stream/trace-stream";
 
@@ -42,6 +45,12 @@ export const handleBatchExportJob = async (
   const { projectId, batchExportId } = batchExportJob;
 
   logger.info(`Starting batch export for ${projectId} and ${batchExportId}`);
+
+  if (isExportUserIdDisabled()) {
+    logger.warn(
+      `LANGFUSE_EXPORT_USER_ID_SALT is not set - batch export ${batchExportId} will emit an empty userId for every row`,
+    );
+  }
 
   const span = getCurrentSpan();
   if (span) {
