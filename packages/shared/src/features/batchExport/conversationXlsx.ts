@@ -86,6 +86,24 @@ const SHEET_NAME_ILLEGAL = /[[\]:*?/\\]/g;
 const SHEET_NAME_RESERVED = "history";
 
 /**
+ * Trims leading and trailing apostrophes, which Excel rejects at either end of
+ * a sheet name.
+ *
+ * Done by scanning rather than with `/^'+|'+$/`: the key comes from ingested
+ * session and user ids, so a caller could send a long run of apostrophes and
+ * make that pattern backtrack. Two linear scans cannot.
+ */
+const trimApostrophes = (value: string): string => {
+  let start = 0;
+  let end = value.length;
+
+  while (start < end && value[start] === "'") start++;
+  while (end > start && value[end - 1] === "'") end--;
+
+  return value.slice(start, end);
+};
+
+/**
  * Turns a group key into a name Excel will accept, unique within the workbook.
  *
  * Truncation makes collisions possible between keys that were distinct (two
@@ -97,11 +115,9 @@ export const toSheetName = (
   usedNames: Set<string>,
   fallback = "unnamed",
 ): string => {
-  const cleaned = rawKey
-    .replace(SHEET_NAME_ILLEGAL, " ")
-    .replace(/\s+/g, " ")
-    .replace(/^'+|'+$/g, "")
-    .trim();
+  const cleaned = trimApostrophes(
+    rawKey.replace(SHEET_NAME_ILLEGAL, " ").replace(/\s+/g, " "),
+  ).trim();
 
   let base = cleaned.slice(0, SHEET_NAME_MAX_LENGTH).trim();
   if (!base || base.toLowerCase() === SHEET_NAME_RESERVED) base = fallback;
