@@ -79,6 +79,21 @@ export const conversationSheetKeyExpression = (
   return `replaceRegexpOne(if(${extracted} != '', ${extracted}, ${sessionId}), '^TA:', '')`;
 };
 
+/**
+ * Restricts a conversation export to traces that belong to a conversation.
+ *
+ * Most traces in a project are not conversation turns at all — LLM calls,
+ * evaluator runs and DB tool spans carry no session or user, and in practice
+ * they outnumber the real turns roughly nine to one. Without this they all
+ * collapse into a single fallback worksheet that dwarfs the rest of the
+ * workbook, and the caller has to know to filter by trace name to avoid it.
+ * A trace with no grouping key has no conversation to belong to, so it is not
+ * part of this export by definition.
+ */
+export const conversationSheetKeyPresent = (
+  mode: ConversationSheetMode,
+): string => `${conversationSheetKeyExpression(mode)} != ''`;
+
 const SHEET_NAME_MAX_LENGTH = 31;
 /** Characters Excel rejects in a worksheet name. */
 const SHEET_NAME_ILLEGAL = /[[\]:*?/\\]/g;

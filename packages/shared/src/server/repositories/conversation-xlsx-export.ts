@@ -1,6 +1,7 @@
 import {
   type ConversationSheetMode,
   conversationSheetKeyExpression,
+  conversationSheetKeyPresent,
 } from "../../features/batchExport/conversationXlsx";
 import { type FilterCondition } from "../../types";
 import { type TracingSearchType } from "../../interfaces/search";
@@ -89,6 +90,7 @@ export const countConversationExportSheets = async (
       SELECT uniqExact(${conversationSheetKeyExpression(mode)}) AS sheet_count
       FROM traces t
       WHERE ${where}
+        AND ${conversationSheetKeyPresent(mode)}
     `,
     params,
     tags: {

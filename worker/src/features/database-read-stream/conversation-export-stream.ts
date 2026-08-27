@@ -1,6 +1,7 @@
 import {
   type ConversationSheetMode,
   conversationSheetKeyExpression,
+  conversationSheetKeyPresent,
 } from "@langfuse/shared";
 import {
   buildConversationExportFilter,
@@ -59,6 +60,7 @@ export const getConversationExportStream = async (
       t.output AS output
     FROM traces t
     WHERE ${where}
+      AND ${conversationSheetKeyPresent(mode)}
     ORDER BY sheet_key ASC, session_id ASC, timestamp ASC
     LIMIT 1 BY id, project_id
     LIMIT {rowLimit: Int64}
