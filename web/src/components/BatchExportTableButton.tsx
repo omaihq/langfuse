@@ -15,10 +15,12 @@ import {
   type BatchExportFileFormat,
   type OrderByState,
   BatchTableNames,
+  isConversationXlsxFormat,
 } from "@langfuse/shared";
 import React from "react";
 import { api } from "@/src/utils/api";
 import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
+import { showErrorToast } from "@/src/features/notifications/showErrorToast";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 
 export type BatchExportTableButtonProps = {
@@ -48,6 +50,9 @@ export const BatchExportTableButton: React.FC<BatchExportTableButtonProps> = (
           text: "View exports",
         },
       });
+    },
+    onError: (error) => {
+      showErrorToast("Export not started", error.message);
     },
   });
   const hasAccess = useHasProjectAccess({
@@ -91,6 +96,15 @@ export const BatchExportTableButton: React.FC<BatchExportTableButtonProps> = (
 
   const warningMessage = getWarningMessage();
 
+  // Workbook exports read the session id and user id of every row, which only
+  // the traces table provides; they are hidden elsewhere rather than offered
+  // and then rejected.
+  const availableFormats = Object.entries(exportOptions).filter(
+    ([format]) =>
+      !isConversationXlsxFormat(format) ||
+      props.tableName === BatchTableNames.Traces,
+  );
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -114,7 +128,7 @@ export const BatchExportTableButton: React.FC<BatchExportTableButtonProps> = (
             </div>
           )}
           <DropdownMenuSeparator />
-          {Object.entries(exportOptions).map(([key, options]) => (
+          {availableFormats.map(([key, options]) => (
             <DropdownMenuItem
               key={key}
               className="capitalize"

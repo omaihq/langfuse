@@ -157,6 +157,11 @@ jobs:
         run: |
           timeout 10 bash -c 'until curl -f http://localhost:3000/api/public/health; do sleep 2; done'
 
+  # Pull requests run a single Postgres version and the default deploy mode.
+  # The full matrix below is upstream's self-host compatibility sweep (Azure
+  # blob storage, Redis Cluster, Postgres 12); we deploy none of those from a
+  # branch, so it is not worth ~20 jobs of feedback latency per push. Pushes to
+  # main, merge queue entries and tags still run every combination.
   tests-web-sync:
     timeout-minutes: 30
     runs-on: ubuntu-latest
@@ -167,7 +172,7 @@ jobs:
     strategy:
       matrix:
         node-version: [24]
-        postgres-version: [12, 15]
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('[15]') || fromJSON('[12, 15]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install golang-migrate for Clickhouse migrations
@@ -262,8 +267,8 @@ jobs:
     strategy:
       matrix:
         node-version: [24]
-        postgres-version: [12, 15]
-        deploy-mode: ["", "-azure", "-redis-cluster"]
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('[15]') || fromJSON('[12, 15]') }}
+        deploy-mode: ${{ github.event_name == 'pull_request' && fromJSON('[""]') || fromJSON('["", "-azure", "-redis-cluster"]') }}
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -372,8 +377,8 @@ jobs:
     strategy:
       matrix:
         node-version: [24]
-        postgres-version: [12, 15]
-        deploy-mode: ["", "-azure", "-redis-cluster"]
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('[15]') || fromJSON('[12, 15]') }}
+        deploy-mode: ${{ github.event_name == 'pull_request' && fromJSON('[""]') || fromJSON('["", "-azure", "-redis-cluster"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v3

@@ -6,11 +6,15 @@ import {
 } from "@/src/server/api/trpc";
 import {
   BatchExportStatus,
+  BatchTableNames,
+  conversationSheetMode,
+  CONVERSATION_XLSX_MAX_SHEETS,
   CreateBatchExportSchema,
   paginationZod,
 } from "@langfuse/shared";
 import {
   BatchExportQueue,
+  countConversationExportSheets,
   logger,
   QueueJobs,
 } from "@langfuse/shared/src/server";
@@ -32,6 +36,35 @@ export const batchExportRouter = createTRPCRouter({
         const { projectId, query, format, name } = input;
         logger.info("[TRPC] Creating export job", { job: input });
         const userId = ctx.session.user.id;
+
+        // Conversation workbooks are rejected here rather than in the worker so
+        // the user sees the problem on click, instead of an export that queues
+        // successfully and fails silently minutes later.
+        const sheetMode = conversationSheetMode(format);
+        if (sheetMode) {
+          if (query.tableName !== BatchTableNames.Traces) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Workbook exports are only available for traces.",
+            });
+          }
+
+          const sheetCount = await countConversationExportSheets({
+            projectId,
+            cutoffCreatedAt: new Date(),
+            filter: query.filter,
+            searchQuery: query.searchQuery,
+            searchType: query.searchType,
+            mode: sheetMode,
+          });
+
+          if (sheetCount > CONVERSATION_XLSX_MAX_SHEETS) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `This export would produce ${sheetCount} sheets, above the limit of ${CONVERSATION_XLSX_MAX_SHEETS}. Narrow the date range or add filters, then try again.`,
+            });
+          }
+        }
 
         // Create export job
         const exportJob = await ctx.prisma.batchExport.create({

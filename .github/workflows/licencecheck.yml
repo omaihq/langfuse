@@ -5,9 +5,10 @@ on:
     branches:
       - "main"
   merge_group:
-  pull_request:
-    branches:
-      - "main"
+# Not run on pull requests. This check exists so upstream can police the EE
+# licence boundary in a public repo; in this fork it added a check to every PR
+# without telling us anything we act on. It still runs on main and in the merge
+# queue, so a dependency with a bad licence is caught before it lands.
 
 jobs:
   license_check:

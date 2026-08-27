@@ -35,6 +35,7 @@ export * from "./features/evals/utilities";
 export * from "./features/evals/observationForEval";
 // table actions
 export * from "./features/batchExport/types";
+export * from "./features/batchExport/conversationXlsx";
 export * from "./features/batchAction/types";
 export * from "./features/batchAction/addToDatasetTypes";
 export * from "./features/batchAction/applyFieldMapping";

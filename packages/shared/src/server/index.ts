@@ -94,6 +94,7 @@ export * from "./queries/clickhouse-sql/query-options";
 export * from "./repositories";
 export * from "./repositories/traces";
 export * from "./repositories/dataset-items";
+export * from "./repositories/conversation-xlsx-export";
 export * from "./utils/rendering";
 export * from "./redis/evalExecutionQueue";
 export * from "./redis/llmAsJudgeExecutionQueue";

@@ -7,6 +7,9 @@ import { orderBy } from "../../interfaces/orderBy";
 import { BatchTableNames } from "../../interfaces/tableNames";
 import { TracingSearchType } from "../../interfaces/search";
 
+const XLSX_CONTENT_TYPE =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
 export enum BatchExportStatus {
   QUEUED = "QUEUED",
   PROCESSING = "PROCESSING",
@@ -19,6 +22,9 @@ export enum BatchExportFileFormat {
   JSON = "JSON",
   CSV = "CSV",
   JSONL = "JSONL",
+  // Conversation workbooks. Traces table only, see `conversationXlsx.ts`.
+  XLSX_BY_TOPIC = "XLSX_BY_TOPIC",
+  XLSX_BY_USER = "XLSX_BY_USER",
 }
 
 // Use shared BatchTableNames enum for consistency across batch operations
@@ -43,6 +49,16 @@ export const exportOptions: Record<
     label: "JSONL",
     extension: "jsonl",
     fileType: "application/x-ndjson; charset=utf-8",
+  },
+  XLSX_BY_TOPIC: {
+    label: "XLSX (one sheet per topic)",
+    extension: "xlsx",
+    fileType: XLSX_CONTENT_TYPE,
+  },
+  XLSX_BY_USER: {
+    label: "XLSX (one sheet per user)",
+    extension: "xlsx",
+    fileType: XLSX_CONTENT_TYPE,
   },
 } as const;
 
