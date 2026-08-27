@@ -4,7 +4,10 @@ import {
   BatchExportQuerySchema,
   BatchExportStatus,
   BatchExportTableName,
+  conversationSheetMode,
+  CONVERSATION_XLSX_MAX_SHEETS,
   exportOptions,
+  InvalidRequestError,
   LangfuseNotFoundError,
 } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
@@ -17,6 +20,8 @@ import {
   getCurrentSpan,
   applyCommentFilters,
   type CommentObjectType,
+  countConversationExportSheets,
+  type StreamableExportFileFormat,
 } from "@langfuse/shared/src/server";
 import { env } from "../../env";
 import {
@@ -25,6 +30,8 @@ import {
 } from "../database-read-stream/getDatabaseReadStream";
 import { getObservationStream } from "../database-read-stream/observation-stream";
 import { getTraceStream } from "../database-read-stream/trace-stream";
+import { getConversationExportStream } from "../database-read-stream/conversation-export-stream";
+import { writeConversationXlsx } from "./writeConversationXlsx";
 
 // Map table names to comment object types for preprocessing
 const tableToCommentType: Record<string, CommentObjectType | undefined> = {
@@ -175,10 +182,54 @@ export const handleBatchExportJob = async (
     }
   }
 
+  // Conversation workbooks are a distinct pipeline: a different query shape, a
+  // required sort order, and a zip writer instead of a text transform. Anything
+  // that is not one of those formats takes the untouched path below.
+  const sheetMode = conversationSheetMode(jobDetails.format);
+
+  if (sheetMode) {
+    if (parsedQuery.data.tableName !== BatchExportTableName.Traces) {
+      throw new InvalidRequestError(
+        `Conversation workbook exports are only available for traces, not ${parsedQuery.data.tableName}.`,
+      );
+    }
+
+    if (sheetMode === "user" && isExportUserIdDisabled()) {
+      throw new InvalidRequestError(
+        "Splitting by user requires LANGFUSE_EXPORT_USER_ID_SALT to be configured, otherwise every row would export without a user id.",
+      );
+    }
+
+    // Checked before the upload starts so an oversized request fails cleanly
+    // instead of producing a workbook Excel cannot usefully open.
+    const sheetCount = await countConversationExportSheets({
+      projectId,
+      cutoffCreatedAt: jobDetails.createdAt,
+      filter: processedFilter,
+      searchQuery: parsedQuery.data.searchQuery,
+      searchType: parsedQuery.data.searchType,
+      mode: sheetMode,
+    });
+
+    if (sheetCount > CONVERSATION_XLSX_MAX_SHEETS) {
+      throw new InvalidRequestError(
+        `This export would produce ${sheetCount} worksheets, above the limit of ${CONVERSATION_XLSX_MAX_SHEETS}. Narrow the date range or filters and try again.`,
+      );
+    }
+  }
+
   // handle db read stream
 
-  const dbReadStream =
-    parsedQuery.data.tableName === BatchExportTableName.Observations
+  const dbReadStream = sheetMode
+    ? await getConversationExportStream({
+        projectId,
+        cutoffCreatedAt: jobDetails.createdAt,
+        filter: processedFilter,
+        searchQuery: parsedQuery.data.searchQuery,
+        searchType: parsedQuery.data.searchType,
+        mode: sheetMode,
+      })
+    : parsedQuery.data.tableName === BatchExportTableName.Observations
       ? await getObservationStream({
           projectId,
           cutoffCreatedAt: jobDetails.createdAt,
@@ -215,20 +266,34 @@ export const handleBatchExportJob = async (
     },
   });
 
-  const fileStream = pipeline(
-    dbReadStream,
-    loggingTransform,
-    streamTransformations[jobDetails.format as BatchExportFileFormat](),
-    (err) => {
-      if (err) {
-        logger.error("Getting data from DB and transform failed: ", err);
-      } else {
-        logger.info(
-          `Batch export ${batchExportId}: completed processing ${rowCount} total rows`,
-        );
-      }
-    },
-  );
+  const onPipelineFinished = (err: NodeJS.ErrnoException | null) => {
+    if (err) {
+      logger.error("Getting data from DB and transform failed: ", err);
+    } else {
+      logger.info(
+        `Batch export ${batchExportId}: completed processing ${rowCount} total rows`,
+      );
+    }
+  };
+
+  const fileStream = sheetMode
+    ? writeConversationXlsx({
+        rows: pipeline(dbReadStream, loggingTransform, onPipelineFinished),
+        maxSheets: CONVERSATION_XLSX_MAX_SHEETS,
+        onError: (err) =>
+          logger.error(
+            `Batch export ${batchExportId}: writing workbook failed`,
+            err,
+          ),
+      })
+    : pipeline(
+        dbReadStream,
+        loggingTransform,
+        streamTransformations[
+          jobDetails.format as StreamableExportFileFormat
+        ](),
+        onPipelineFinished,
+      );
 
   const fileDate = new Date().getTime();
   const fileExtension =
