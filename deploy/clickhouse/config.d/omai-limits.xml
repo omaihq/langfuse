@@ -1,0 +1,21 @@
+<!--
+  Server-wide memory bounds. Sized for the Railway replica limit of 5 GB.
+
+  WHY THE OLD IMAGE HAD NO CAP: its memory.xml set max_server_memory_usage to
+  3.2 GB *and* max_server_memory_usage_to_ram_ratio to 0. ClickHouse lowers an
+  explicit max_server_memory_usage to (RAM x ratio) whenever it exceeds that
+  product, and 3.2 GB > 5 GB x 0 = 0, so the effective cap became 0 = unlimited.
+  system.server_settings then showed max_server_memory_usage = 0 in production.
+  Keep the ratio at its default (0.9): 5 GB x 0.9 = 4.5 GB >= 3 GiB, so the
+  explicit cap below is the one that applies.
+-->
+<clickhouse>
+  <!-- 3 GiB hard cap for the whole server. Leaves >= 1 GiB of the 5 GB limit
+       for the OS page cache and allocations ClickHouse does not track. -->
+  <max_server_memory_usage>3221225472</max_server_memory_usage>
+  <max_server_memory_usage_to_ram_ratio>0.9</max_server_memory_usage_to_ram_ratio>
+
+  <!-- Caches, carried over from the old image (defaults are 5 GiB / 8 GiB). -->
+  <mark_cache_size>268435456</mark_cache_size>
+  <uncompressed_cache_size>134217728</uncompressed_cache_size>
+</clickhouse>

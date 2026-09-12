@@ -1,0 +1,47 @@
+<!--
+  ClickHouse's own log tables are MergeTree tables on the data volume and ship
+  with no TTL. On 2026-09-11 they were ~80 GB of an 85 GB volume while Langfuse's
+  data was ~3 GB (asynchronous_metric_log 22 GiB, text_log 18 GiB, metric_log
+  5 GiB, trace_log 4 GiB, query_log 2.6 GiB, plus ~18 GiB of renamed leftovers).
+
+  Pattern borrowed from Plausible CE (clickhouse/logs.xml in
+  github.com/plausible/community-edition): keep the few tables worth having
+  with a short TTL, remove the rest. Langfuse never reads any of these.
+
+  NOTE: changing a log table's definition makes ClickHouse rename the existing
+  table to <name>_N and create a fresh one; remove="1" stops writes but does not
+  delete existing data. deploy/README.md (Phase 2) lists the DROP TABLE cleanup.
+-->
+<clickhouse>
+  <!-- Keep: what a human looks at when something is wrong. -->
+  <query_log>
+    <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+  </query_log>
+  <part_log>
+    <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+  </part_log>
+  <error_log>
+    <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+  </error_log>
+  <!-- metric_log was the evidence in the 2026-09-11 freeze; 3 days is enough. -->
+  <metric_log>
+    <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+  </metric_log>
+
+  <!-- Remove: high-volume diagnostics nobody consumes here. -->
+  <text_log remove="1" />                 <!-- the server log duplicated into a table -->
+  <asynchronous_metric_log remove="1" />  <!-- thousands of gauges per second -->
+  <trace_log remove="1" />                <!-- sampling profiler -->
+  <query_thread_log remove="1" />
+  <query_views_log remove="1" />
+  <processors_profile_log remove="1" />
+  <opentelemetry_span_log remove="1" />
+  <latency_log remove="1" />
+  <session_log remove="1" />
+
+  <!-- Server log file: 'trace' is the packaged default and writes constantly.
+       Console output stays off so the Railway log drain is not flooded. -->
+  <logger>
+    <level>information</level>
+  </logger>
+</clickhouse>

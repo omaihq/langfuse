@@ -1,0 +1,18 @@
+<!--
+  Per-query bounds on the `default` profile, which is the profile the user
+  created from CLICKHOUSE_USER by the official entrypoint gets.
+
+  The heaviest query Langfuse is known to run here (GET /api/public/traces,
+  observation_stats CTE) peaks around 1 GiB, so 2 GiB leaves headroom while
+  keeping one query from taking the whole 3 GiB server cap. Group-by and sort
+  spill to disk once they pass 1 GiB instead of failing.
+-->
+<clickhouse>
+  <profiles>
+    <default>
+      <max_memory_usage>2147483648</max_memory_usage>
+      <max_bytes_before_external_group_by>1073741824</max_bytes_before_external_group_by>
+      <max_bytes_before_external_sort>1073741824</max_bytes_before_external_sort>
+    </default>
+  </profiles>
+</clickhouse>
