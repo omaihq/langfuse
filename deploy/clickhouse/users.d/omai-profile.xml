@@ -1,0 +1,27 @@
+<!--
+  Per-query bounds on the `default` profile, which is the profile the user
+  created from CLICKHOUSE_USER by the official entrypoint gets.
+
+  1.5 GiB per query under the 3 GiB server cap (config.d/omai-limits.xml):
+  one runaway query cannot take the whole server, and after it is killed the
+  allocator's retained pages plus a second ordinary query still fit. The
+  heaviest query Langfuse is known to run here (GET /api/public/traces) peaks
+  around 1 GiB.
+
+  Spilling is expressed as a *ratio* of the query's memory limit, not in
+  bytes, on purpose: Langfuse web sends its own
+  max_bytes_before_external_group_by (CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY,
+  default 32 GB) on every dashboard query, which would override a byte value
+  set here. It does not send the ratio settings, so these hold for every
+  client. 0.3 x 1.5 GiB = ~460 MiB: the hash table is flushed to disk well
+  before its next doubling could cross the limit.
+-->
+<clickhouse>
+  <profiles>
+    <default>
+      <max_memory_usage>1610612736</max_memory_usage>
+      <max_bytes_ratio_before_external_group_by>0.3</max_bytes_ratio_before_external_group_by>
+      <max_bytes_ratio_before_external_sort>0.3</max_bytes_ratio_before_external_sort>
+    </default>
+  </profiles>
+</clickhouse>
