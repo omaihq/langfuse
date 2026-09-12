@@ -97,12 +97,14 @@ say "Limits are enforced, not just reported"
 # exceeded" / "Memory limit (total) exceeded". Both carry "maximum: <limit>".
 out=$(qerr "SELECT length(groupArray(number)) FROM numbers(400000000)")
 case "$out" in
-  *"Code: 241"*"uery"*"maximum: 2.00 GiB"*) ok "a 3.2 GB query is refused by the 2 GiB per-query limit" ;;
+  *"Code: 241"*"Query memory limit exceeded"*"maximum: 2.00 GiB"*|*"Code: 241"*"Memory limit (for query) exceeded"*"maximum: 2.00 GiB"*)
+    ok "a 3.2 GB query is refused by the 2 GiB per-query limit" ;;
   *) bad "per-query limit not enforced: ${out:0:300}" ;;
 esac
 out=$(qerr "SELECT length(groupArray(number)) FROM numbers(700000000) SETTINGS max_memory_usage = 0, max_bytes_before_external_group_by = 0")
 case "$out" in
-  *"Code: 241"*"total"*"maximum: 3.00 GiB"*) ok "a 5.6 GB query with the per-query limit disabled is refused by the 3 GiB server cap" ;;
+  *"Code: 241"*"(total) memory limit exceeded"*"maximum: 3.00 GiB"*|*"Code: 241"*"Memory limit (total) exceeded"*"maximum: 3.00 GiB"*)
+    ok "a 5.6 GB query with the per-query limit disabled is refused by the 3 GiB server cap" ;;
   *) bad "server cap not enforced: ${out:0:300}" ;;
 esac
 
