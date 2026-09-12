@@ -6,14 +6,32 @@
 
   Pattern borrowed from Plausible CE (clickhouse/logs.xml in
   github.com/plausible/community-edition): keep the few tables worth having
-  with a short TTL, remove the rest. Langfuse never reads any of these.
+  with a short TTL, remove the rest.
 
-  NOTE: changing a log table's definition makes ClickHouse rename the existing
-  table to <name>_N and create a fresh one; remove="1" stops writes but does not
-  delete existing data. deploy/README.md (Phase 2) lists the DROP TABLE cleanup.
+  THIS FILE IS THE SINGLE SOURCE OF TRUTH for which log tables exist. The boot
+  guard (docker-entrypoint-initdb.d/10-omai-guard.sh) reads the remove="1"
+  entries below and drops those tables, plus any renamed <name>_N generation,
+  on every start; verify-local.sh reads the <ttl> entries to know which tables
+  must exist. Editing this file is enough — no list to keep in sync.
+
+  Why metric_log and query_metric_log are removed rather than kept short:
+  they have ~1 400 and ~1 000 columns. Merging or TTL-rewriting a wide part of
+  such a table needs several GiB for per-column streams, which under a 3 GiB
+  server cap fails and is retried every ~2 s forever, pinning the server at the
+  cap and killing ordinary queries — the exact freeze this config exists to
+  prevent (reproduced during review). Railway metrics cover memory over time.
+
+  Langfuse reads exactly one of these tables: system.query_log
+  (packages/shared/src/server/clickhouse/queryTracking.ts polls it to track
+  background-migration queries). Keep it.
+
+  Tables the base config enables that are not listed here (backup_log,
+  crash_log, blob_storage_log, s3queue_log, iceberg_metadata_log, ...) only
+  receive rows on events Langfuse never triggers; verify-local.sh fails if any
+  of them ever grows a TTL-less table with data.
 -->
 <clickhouse>
-  <!-- Keep: what a human looks at when something is wrong. -->
+  <!-- Keep: what a human (or Langfuse) looks at. -->
   <query_log>
     <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
   </query_log>
@@ -23,25 +41,25 @@
   <error_log>
     <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
   </error_log>
-  <!-- metric_log was the evidence in the 2026-09-11 freeze; 3 days is enough. -->
-  <metric_log>
-    <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
-  </metric_log>
 
   <!-- Remove: high-volume diagnostics nobody consumes here. -->
-  <text_log remove="1" />                 <!-- the server log duplicated into a table -->
+  <text_log remove="1" />                 <!-- the server log duplicated into a table; the console log below replaces it -->
   <asynchronous_metric_log remove="1" />  <!-- thousands of gauges per second -->
+  <metric_log remove="1" />               <!-- ~1 400 columns; see above -->
+  <query_metric_log remove="1" />         <!-- ~1 000 columns, one row per second per running query -->
+  <asynchronous_insert_log remove="1" />  <!-- one row per async-insert flush; Langfuse inserts everything async -->
   <trace_log remove="1" />                <!-- sampling profiler -->
   <query_thread_log remove="1" />
   <query_views_log remove="1" />
   <processors_profile_log remove="1" />
   <opentelemetry_span_log remove="1" />
-  <latency_log remove="1" />
-  <session_log remove="1" />
 
-  <!-- Server log file: 'trace' is the packaged default and writes constantly.
-       Console output stays off so the Railway log drain is not flooded. -->
+  <!-- Server log: 'trace' to a file on the ephemeral disk is the packaged
+       default, and that file does not survive a Railway restart. Log at
+       'information' to the console as well so Railway keeps the last lines
+       across a restart (measured: ~60 lines at startup, then near silence). -->
   <logger>
     <level>information</level>
+    <console>1</console>
   </logger>
 </clickhouse>

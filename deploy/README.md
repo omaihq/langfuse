@@ -185,23 +185,80 @@ MinIO. Never paste the values here.
 
 ## Phase 2 — versioned ClickHouse image
 
-Filled in when Phase 2 runs. Verification queries (run inside `clickhouse-client`):
+Image: `deploy/clickhouse/` (Dockerfile pinned to `clickhouse/clickhouse-server:25.8.11.66`,
+the version the old image reported). What it sets and why is in the comments of
+`config.d/omai-limits.xml`, `config.d/omai-system-logs.xml`, `users.d/omai-profile.xml`.
 
-```sql
-SELECT name, value, changed FROM system.server_settings
-WHERE name IN ('max_server_memory_usage','max_server_memory_usage_to_ram_ratio','mark_cache_size','max_concurrent_queries');
--- expect max_server_memory_usage = 3221225472, changed = 1
+**Root cause of the missing cap in the old image:** its `memory.xml` set
+`max_server_memory_usage` to 3.2 GB *and* `max_server_memory_usage_to_ram_ratio`
+to 0. ClickHouse lowers an explicit cap to RAM × ratio when the cap is larger, so
+the effective cap became 0 (unlimited). The new config keeps the ratio at 0.9.
 
-SELECT name, engine_full FROM system.tables
-WHERE database = 'system' AND name LIKE '%_log' AND engine_full LIKE '%TTL%';
+### Limits (all verified in effect and enforced by `verify-local.sh`)
 
-SELECT name FROM system.tables WHERE database = 'system' AND match(name, '_log_[0-9]+$');
--- drop each of these, plus the disabled live tables (text_log, asynchronous_metric_log,
--- trace_log, query_thread_log, query_views_log, processors_profile_log,
--- opentelemetry_span_log, latency_log); then: df -h -i /var/lib/clickhouse
-```
+| Setting | Value | Where |
+|---|---|---|
+| `max_server_memory_usage` | 3 GiB (replica limit 5 GB) | config.d |
+| `merges_mutations_memory_usage_soft_limit` | 1 GiB (default would be 2.5 GiB) | config.d |
+| `max_memory_usage` (per query) | 1.5 GiB | users.d, profile `default` |
+| `max_bytes_ratio_before_external_group_by` / `_sort` | 0.3 (spill at ~460 MiB; ratio because the web overrides the byte setting) | users.d |
+| `mark_cache_size` / `uncompressed_cache_size` | 256 MiB / 128 MiB (as before) | config.d |
+| System log tables kept | `query_log`, `part_log`, `error_log`, 7-day TTL | config.d |
+| System log tables removed | `text_log`, `asynchronous_metric_log`, `metric_log`, `query_metric_log`, `asynchronous_insert_log`, `trace_log`, `query_thread_log`, `query_views_log`, `processors_profile_log`, `opentelemetry_span_log` | config.d |
+| Server log | level `information`, also to console (Railway keeps it across restarts) | config.d |
+
+### Boot guard (`docker-entrypoint-initdb.d/10-omai-guard.sh`)
+
+Runs at **every** start before the ports open. It refuses to start (Railway then
+keeps the previous deployment live) if `max_server_memory_usage`,
+`merges_mutations_memory_usage_soft_limit` or the profile's `max_memory_usage`
+are not the values above — a resized replica or a config typo can no longer
+produce a silently uncapped server. It then drops every system log table marked
+`remove="1"` in `omai-system-logs.xml` and every renamed `<name>_N` generation,
+so the ~80 GB of leftovers on the production volume disappear on the first boot
+without anyone running `DROP TABLE` by hand. Its lines are prefixed `omai-guard:`
+in the Railway service logs.
+
+### Gate before touching Railway
+
+`deploy/clickhouse/verify-local.sh` (also run by CI on any change under
+`deploy/clickhouse/`): builds the image, proves the guard aborts under a 3 GB
+limit, proves it cleans a volume written by the base image, then under the 5 GB
+limit checks every setting, that both memory limits refuse oversized queries and
+a normal query still fits right after a kill, that the spill survives the web's
+32 GB override, that only the kept log tables exist and carry a TTL, that the
+console log works, that the timezone is UTC, and that Langfuse's ClickHouse
+migrations apply with a trace round-trip. `OLD_IMAGE=adrianomai/clickhouse-custom:25.8`
+additionally reproduces the old image's cap = 0.
+
+### Cutover (Railway, human, quiet hour)
+
+1. Service `clickhouse` → Settings → Source: repo `omaihq/langfuse`, branch `main`,
+   root directory `deploy/clickhouse`, builder Dockerfile. Watch paths
+   `/deploy/clickhouse/**`. Keep the volume, variables and `/ping` health check.
+2. Deploy. ClickHouse restarts once (~1 min); ingestion waits in Redis.
+3. Railway logs must show `omai-guard: ok` and, on this first boot, a series of
+   `omai-guard: dropped system.<table>` lines. If they show `REFUSING TO START`,
+   the deployment never went live; the previous one is still serving.
+4. Confirm the Langfuse traces page loads, then inside `railway ssh`:
+   ```sql
+   SELECT name, value FROM system.server_settings
+   WHERE name IN ('max_server_memory_usage','merges_mutations_memory_usage_soft_limit');
+   SELECT name, engine_full FROM system.tables WHERE database = 'system' AND name LIKE '%_log';
+   ```
+   and `df -h -i /var/lib/clickhouse` — expect used space to fall from ~85 GB to
+   under 10 GB within minutes (drops are `SYNC`).
+5. Soak 3 days: RAM avg ≤ 3 GB, volume flat, no `MEMORY_LIMIT_EXCEEDED` in
+   web/worker logs. If the dashboards page trips the per-query limit, raise
+   `max_memory_usage` in `users.d/omai-profile.xml` (and the guard's expected
+   value) rather than removing the server cap.
+
+Optional, on `langfuse-web`: `CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY=536870912`
+so the web's own spill threshold matches the profile instead of 32 GB. Not
+required — the ratio setting already holds — but tidier.
 
 Rollback: switch the service source back to `adrianomai/clickhouse-custom:25.8`.
+The dropped log tables are not restored; nothing depends on them.
 
 ---
 

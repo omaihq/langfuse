@@ -7,15 +7,36 @@
   product, and 3.2 GB > 5 GB x 0 = 0, so the effective cap became 0 = unlimited.
   system.server_settings then showed max_server_memory_usage = 0 in production.
   Keep the ratio at its default (0.9): 5 GB x 0.9 = 4.5 GB >= 3 GiB, so the
-  explicit cap below is the one that applies.
+  explicit cap below is the one that applies. The boot guard
+  (docker-entrypoint-initdb.d/10-omai-guard.sh) refuses to start if it is not.
+
+  How the cap behaves (25.8): the server refuses an allocation when either the
+  tracked total or the process RSS (re-read from the cgroup every 50 ms) would
+  exceed it. RSS includes memory the allocator has not yet returned after a
+  query was killed, so for some seconds after one oversized query the
+  effective room for everyone else is smaller than "cap minus tracked usage".
+  That is why the per-query limit (users.d/omai-profile.xml) sits well below
+  this cap: 1.5 GiB per query under a 3 GiB server leaves room for a second
+  query plus retained pages.
 -->
 <clickhouse>
-  <!-- 3 GiB hard cap for the whole server. Leaves >= 1 GiB of the 5 GB limit
-       for the OS page cache and allocations ClickHouse does not track. -->
+  <!-- 3 GiB hard cap for the whole server; ~2 GB of the 5 GB limit stays for
+       the OS page cache and the allocator's retained pages. -->
   <max_server_memory_usage>3221225472</max_server_memory_usage>
   <max_server_memory_usage_to_ram_ratio>0.9</max_server_memory_usage_to_ram_ratio>
+
+  <!-- Background merges and mutations count against the same 3 GiB but are
+       never the ones killed when it is hit — queries are. Without this line the
+       merge budget defaults to RAM x 0.5 = 2.5 GiB, leaving a single 1 GiB
+       Langfuse query enough to trip the cap. 1 GiB is plenty for Langfuse's
+       ~3 GB of data; the huge merges were the system log tables, now gone. -->
+  <merges_mutations_memory_usage_soft_limit>1073741824</merges_mutations_memory_usage_soft_limit>
 
   <!-- Caches, carried over from the old image (defaults are 5 GiB / 8 GiB). -->
   <mark_cache_size>268435456</mark_cache_size>
   <uncompressed_cache_size>134217728</uncompressed_cache_size>
+
+  <!-- The boot guard drops leftover system log tables of up to ~22 GB; the
+       default 50 GB DROP limit is close enough to be a surprise later. -->
+  <max_table_size_to_drop>0</max_table_size_to_drop>
 </clickhouse>
